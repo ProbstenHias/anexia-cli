@@ -28,6 +28,7 @@ test:
 
 cover:
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	go tool cover -func=coverage.out | tail -1
 	go tool cover -html=coverage.out -o coverage.html
 
 lint:
