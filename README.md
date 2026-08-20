@@ -1,5 +1,9 @@
 # anexia-cli
 
+[![CI](https://github.com/ProbstenHias/anexia-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ProbstenHias/anexia-cli/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/ProbstenHias/anexia-cli/branch/main/graph/badge.svg)](https://codecov.io/gh/ProbstenHias/anexia-cli)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A small command-line interface for the [Anexia Engine API](https://engine.anexia-it.com/), built on the
 official [go-anxcloud](https://github.com/anexia-it/go-anxcloud) client. It currently covers listing
 vSphere provisioning locations and managing local configuration.

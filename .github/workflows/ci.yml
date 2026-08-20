@@ -32,4 +32,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: make test
+      - run: make cover
+
+      - uses: codecov/codecov-action@v7
+        with:
+          files: coverage.out
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
