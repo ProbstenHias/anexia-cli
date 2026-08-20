@@ -1,0 +1,97 @@
+version: "2"
+
+run:
+  concurrency: 4
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - asasalint # []any passed as any to a variadic func(...any)
+    - asciicheck # non-ASCII identifiers
+    - bidichk # dangerous unicode sequences
+    - bodyclose # unclosed HTTP response bodies
+    - copyloopvar # redundant loop variable copies
+    - durationcheck # two durations multiplied together
+    - errcheck # unchecked errors
+    - errorlint # error comparison and wrapping mistakes
+    - fatcontext # contexts nested in loops
+    - forcetypeassert # unchecked type assertions
+    - gocheckcompilerdirectives # malformed //go: directives
+    - govet
+    - ineffassign
+    - nilerr # returning nil after checking err != nil
+    - nosprintfhostport # Sprintf-built host:port URLs
+    - reassign # reassigned package variables
+    - sqlclosecheck
+    - staticcheck
+    - unused
+    - wastedassign
+    # Security
+    - gosec
+    # Style
+    - gochecknoinits # no init() functions
+    - gocritic
+    - goprintffuncname # printf-like funcs must end in f
+    - misspell
+    - nakedret
+    - nolintlint # malformed or unexplained nolint directives
+    - revive
+    - unparam
+
+  exclusions:
+    rules:
+      # Tests read fixtures they created under t.TempDir(), so a variable
+      # path is not a file-inclusion risk.
+      - path: _test\.go$
+        linters:
+          - gosec
+        text: "G304"
+
+  settings:
+    gocritic:
+      enabled-tags:
+        - performance
+        - style
+        - experimental
+      disabled-checks:
+        # https://github.com/go-critic/go-critic/issues/845
+        - dupImport
+        # Conflicts with the explicit switch/if style used here.
+        - ifElseChain
+        # Would force type declarations above all other declarations.
+        - typeDefFirst
+    govet:
+      enable:
+        - httpresponse
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 0
+    revive:
+      severity: error
+      rules:
+        - name: atomic
+        - name: context-as-argument
+        - name: early-return
+        - name: empty-lines
+        - name: error-return
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: unused-parameter
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ProbstenHias/anexia-cli
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

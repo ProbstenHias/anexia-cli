@@ -1,0 +1,58 @@
+version: 2
+
+release:
+  github:
+    owner: ProbstenHias
+    name: anexia-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: anexia
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/ProbstenHias/anexia-cli/internal/cli.version={{.Version}} -X github.com/ProbstenHias/anexia-cli/internal/cli.commit={{.Commit}} -X github.com/ProbstenHias/anexia-cli/internal/cli.date={{.Date}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Refactors
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 3
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^docs'
+      - '^test'
+      - '^chore'
