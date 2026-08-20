@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  ci:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -16,4 +16,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: make ci
+      - run: make fmt-check
+
+      - run: make vet
+
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make test
