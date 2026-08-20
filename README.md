@@ -1,7 +1,7 @@
 # anexia-cli
 
 [![CI](https://github.com/ProbstenHias/anexia-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ProbstenHias/anexia-cli/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/ProbstenHias/anexia-cli/branch/main/graph/badge.svg)](https://codecov.io/gh/ProbstenHias/anexia-cli)
+[![Coverage](https://raw.githubusercontent.com/ProbstenHias/anexia-cli/badges/.badges/main/coverage.svg)](https://github.com/ProbstenHias/anexia-cli/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ProbstenHias/anexia-cli?sort=semver)](https://github.com/ProbstenHias/anexia-cli/releases/latest)
 [![Go Reference](https://pkg.go.dev/badge/github.com/ProbstenHias/anexia-cli.svg)](https://pkg.go.dev/github.com/ProbstenHias/anexia-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

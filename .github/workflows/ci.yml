@@ -24,6 +24,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -34,9 +36,12 @@ jobs:
 
       - run: make cover
 
-      - uses: codecov/codecov-action@v7
+      # Enforces the coverage threshold everywhere and, on main only, commits the
+      # badge SVG to the orphan `badges` branch. The token is deliberately empty
+      # off main so fork pull requests skip the write they are not allowed to make.
+      - uses: vladopajic/go-test-coverage@v2
         with:
-          files: coverage.out
-          fail_ci_if_error: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          profile: coverage.out
+          threshold-total: 80
+          git-token: ${{ github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+          git-branch: badges
