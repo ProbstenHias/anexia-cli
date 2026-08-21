@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ProbstenHias/anexia-cli/internal/config"
-	"github.com/ProbstenHias/anexia-cli/internal/output"
 )
 
 func newConfigCommand(opts *globalOptions) *cobra.Command {
@@ -154,15 +153,15 @@ func newConfigViewCommand(opts *globalOptions) *cobra.Command {
 				return err
 			}
 
-			w, err := opts.writer(cmd.OutOrStdout())
+			w, err := opts.Writer(cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
 
 			redacted := cfg.Redacted()
 
-			if w.Format() == output.FormatJSON {
-				return w.JSON(map[string]string{
+			if w.Format().Structured() {
+				return w.Object(map[string]string{
 					"token":        redacted.Token,
 					"api_base_url": redacted.APIBaseURL,
 				})

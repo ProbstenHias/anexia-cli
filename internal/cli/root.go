@@ -11,23 +11,20 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.anx.io/go-anxcloud/pkg/api"
 	"go.anx.io/go-anxcloud/pkg/client"
-	"go.anx.io/go-anxcloud/pkg/vsphere/provisioning/location"
 
 	"github.com/ProbstenHias/anexia-cli/internal/anx"
 	"github.com/ProbstenHias/anexia-cli/internal/config"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 	"github.com/ProbstenHias/anexia-cli/internal/output"
 )
 
 // Deps holds the collaborators the command tree needs, so tests can substitute
-// streams and API constructors.
+// the output streams.
 type Deps struct {
 	Stdout io.Writer
 	Stderr io.Writer
-
-	// NewLocationAPI builds the location API from a client. Defaults to
-	// location.NewAPI when nil.
-	NewLocationAPI func(client.Client) location.API
 }
 
 func (d Deps) stdout() io.Writer {
@@ -46,18 +43,13 @@ func (d Deps) stderr() io.Writer {
 	return os.Stderr
 }
 
-func (d Deps) newLocationAPI(c client.Client) location.API {
-	if d.NewLocationAPI != nil {
-		return d.NewLocationAPI(c)
-	}
-
-	return location.NewAPI(c)
-}
-
-// globalOptions holds the values of the persistent flags.
+// globalOptions holds the values of the persistent flags and implements the
+// resource.Env interface the generated commands run against.
 type globalOptions struct {
 	configPath   string
 	outputFormat string
+	noHeaders    bool
+	assumeYes    bool
 	timeout      time.Duration
 }
 
@@ -66,33 +58,62 @@ func (g *globalOptions) resolve(flags *pflag.FlagSet) (config.Config, error) {
 	return config.Resolve(g.configPath, flags, nil)
 }
 
-// writer builds an output writer for the requested format.
-func (g *globalOptions) writer(out io.Writer) (*output.Writer, error) {
-	f, err := output.ParseFormat(g.outputFormat)
-	if err != nil {
-		return nil, err
-	}
-
-	return output.NewWriter(out, f), nil
-}
-
-// client resolves configuration and builds an Anexia client.
-func (g *globalOptions) client(flags *pflag.FlagSet) (client.Client, error) {
+// options turns the resolved configuration into client options.
+func (g *globalOptions) options(flags *pflag.FlagSet) (anx.Options, error) {
 	cfg, err := g.resolve(flags)
 	if err != nil {
+		return anx.Options{}, err
+	}
+
+	return anx.Options{Token: cfg.Token, BaseURL: cfg.APIBaseURL}, nil
+}
+
+// Writer builds an output writer for the requested format.
+func (g *globalOptions) Writer(out io.Writer) (*output.Writer, error) {
+	f, err := output.ParseFormat(g.outputFormat)
+	if err != nil {
+		// An unsupported --output is a flag mistake, not a failed request.
+		return nil, errmap.Usage(err)
+	}
+
+	w := output.NewWriter(out, f)
+	w.SetNoHeaders(g.noHeaders)
+
+	return w, nil
+}
+
+// Client builds the legacy Anexia client.
+func (g *globalOptions) Client(flags *pflag.FlagSet) (client.Client, error) {
+	opts, err := g.options(flags)
+	if err != nil {
 		return nil, err
 	}
 
-	return anx.NewClient(anx.Options{Token: cfg.Token, BaseURL: cfg.APIBaseURL})
+	return anx.NewClient(opts)
 }
 
-// context derives a context honoring the --timeout flag.
-func (g *globalOptions) context(parent context.Context) (context.Context, context.CancelFunc) {
+// API builds the generic Anexia client.
+func (g *globalOptions) API(flags *pflag.FlagSet) (api.API, error) {
+	opts, err := g.options(flags)
+	if err != nil {
+		return nil, err
+	}
+
+	return anx.NewAPI(opts)
+}
+
+// Context derives a context honoring the --timeout flag.
+func (g *globalOptions) Context(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, g.timeout)
 }
 
-// timeoutHint augments a deadline error with actionable advice.
-func (g *globalOptions) timeoutHint(err error) error {
+// AssumeYes reports whether --yes was passed.
+func (g *globalOptions) AssumeYes() bool {
+	return g.assumeYes
+}
+
+// Fail augments a deadline error with actionable advice.
+func (g *globalOptions) Fail(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%w (timeout was %s, raise it with --timeout)", err, g.timeout)
 	}
@@ -117,6 +138,14 @@ func NewRootCommand(d Deps) *cobra.Command {
 		},
 	}
 
+	// Bad flags and bad argument counts are the user's mistake, so they get
+	// the usage exit code instead of the generic failure one. Cobra reports
+	// both without a way to classify them, so they are marked here, in the
+	// one place every command inherits from.
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return errmap.Usage(err)
+	})
+
 	root.SetOut(d.stdout())
 	root.SetErr(d.stderr())
 
@@ -124,16 +153,35 @@ func NewRootCommand(d Deps) *cobra.Command {
 	flags.StringVar(&opts.configPath, "config", "", "path to the config file")
 	flags.String("token", "", "Anexia API token")
 	flags.String("api-base-url", "", "Anexia Engine base URL")
-	flags.StringVarP(&opts.outputFormat, "output", "o", string(output.FormatTable), "output format: table or json")
+	flags.StringVarP(&opts.outputFormat, "output", "o", string(output.FormatTable), "output format: "+output.FormatNames())
+	flags.BoolVar(&opts.noHeaders, "no-headers", false, "omit the header row in table and tsv output")
+	flags.BoolVarP(&opts.assumeYes, "yes", "y", false, "skip confirmation prompts")
 	flags.DurationVar(&opts.timeout, "timeout", 30*time.Second, "timeout for API requests")
 
 	root.AddCommand(
-		newLocationCommand(d, opts),
+		newCoreCommand(opts),
 		newConfigCommand(opts),
 		newVersionCommand(),
 	)
 
+	markUsageErrors(root)
+
 	return root
+}
+
+// markUsageErrors makes every argument validator in the tree report a usage
+// error. Cobra's validators produce a good message but no way to classify it,
+// and doing this once here beats wrapping 20 call sites that would drift.
+func markUsageErrors(cmd *cobra.Command) {
+	if validate := cmd.Args; validate != nil {
+		cmd.Args = func(cmd *cobra.Command, args []string) error {
+			return errmap.Usage(validate(cmd, args))
+		}
+	}
+
+	for _, child := range cmd.Commands() {
+		markUsageErrors(child)
+	}
 }
 
 // Execute runs the command tree.

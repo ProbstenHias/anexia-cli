@@ -3,15 +3,18 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 // isolate points config discovery at an empty temporary directory so tests
@@ -34,39 +37,57 @@ func isolate(t *testing.T) string {
 func run(t *testing.T, args ...string) (stdoutText, stderrText string, err error) {
 	t.Helper()
 
+	return runWithInput(t, "", args...)
+}
+
+// runWithInput is run with stdin wired up, for the confirmation prompts.
+func runWithInput(t *testing.T, input string, args ...string) (stdoutText, stderrText string, err error) {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	cmd := cli.NewRootCommand(cli.Deps{Stdout: &stdout, Stderr: &stderr})
 	cmd.SetArgs(args)
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader(input))
 
 	err = cmd.Execute()
 
 	return stdout.String(), stderr.String(), err
 }
 
-// locationServer serves a canned location.json response and records the query.
-func locationServer(t *testing.T, status int, body string) (srv *httptest.Server, lastQuery *string) {
+// server serves a canned JSON body on any path and records the last request.
+func server(t *testing.T, status int, body string) (srv *httptest.Server, last *request) {
 	t.Helper()
 
-	query := ""
+	seen := request{}
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/vsphere/v1/provisioning/location.json", r.URL.Path)
-		query = r.URL.RawQuery
+		seen.path = r.URL.Path
+		seen.query = r.URL.RawQuery
+		seen.method = r.Method
+
+		if r.Body != nil {
+			raw, _ := io.ReadAll(r.Body)
+			seen.body = string(raw)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
 
-	return srv, &query
+	return srv, &seen
 }
 
-const twoLocations = `{"data":[
-  {"code":"ANX04","name":"Vienna","country":"AT","country_name":"Austria","id":"id-1"},
-  {"code":"ANX63","name":"Frankfurt","country":"DE","id":"id-2"}
-]}`
+// request captures what the CLI sent, so tests can assert on the wire format.
+type request struct {
+	method string
+	path   string
+	query  string
+	body   string
+}
 
 func TestRootWithNoArgsPrintsHelp(t *testing.T) {
 	isolate(t)
@@ -74,9 +95,19 @@ func TestRootWithNoArgsPrintsHelp(t *testing.T) {
 	stdout, _, err := run(t)
 	require.NoError(t, err)
 	require.Contains(t, stdout, "anexia")
-	require.Contains(t, stdout, "location")
+	require.Contains(t, stdout, "core")
 	require.Contains(t, stdout, "config")
 	require.Contains(t, stdout, "version")
+}
+
+func TestRootHelpListsGlobalFlags(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t)
+	require.NoError(t, err)
+	require.Contains(t, stdout, "--no-headers")
+	require.Contains(t, stdout, "--yes")
+	require.Contains(t, stdout, "table, json, yaml, tsv")
 }
 
 func TestVersionCommand(t *testing.T) {
@@ -87,130 +118,51 @@ func TestVersionCommand(t *testing.T) {
 	require.Contains(t, stdout, "anexia dev")
 }
 
-func TestLocationWithoutSubcommandPrintsHelp(t *testing.T) {
+func TestRootRejectsOldLocationCommand(t *testing.T) {
 	isolate(t)
-
-	stdout, _, err := run(t, "location")
-	require.NoError(t, err)
-	require.Contains(t, stdout, "list")
-}
-
-func TestLocationListTable(t *testing.T) {
-	isolate(t)
-	srv, query := locationServer(t, http.StatusOK, twoLocations)
-
-	stdout, stderr, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Empty(t, stderr)
-	require.Equal(t, "page=1&limit=50", *query)
-	require.Equal(t,
-		"CODE    NAME        COUNTRY   ID\n"+
-			"ANX04   Vienna      Austria   id-1\n"+
-			"ANX63   Frankfurt   DE        id-2\n",
-		stdout)
-}
-
-func TestLocationListJSON(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, twoLocations)
-
-	stdout, _, err := run(t, "location", "list", "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-
-	var got []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
-	require.Len(t, got, 2)
-	require.Equal(t, "ANX04", got[0]["code"])
-	require.Equal(t, "Austria", got[0]["country_name"])
-}
-
-func TestLocationListPassesFilters(t *testing.T) {
-	isolate(t)
-	srv, query := locationServer(t, http.StatusOK, twoLocations)
-
-	_, _, err := run(t, "location", "list",
-		"--token", "tok", "--api-base-url", srv.URL,
-		"--page", "3", "--limit", "7",
-		"--location-code", "ANX04", "--organization", "org-1")
-	require.NoError(t, err)
-	require.Equal(t, "page=3&limit=7&location_code=ANX04&organization=org-1", *query)
-}
-
-func TestLocationListEmptyTable(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, `{"data":[]}`)
-
-	stdout, stderr, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Equal(t, "CODE   NAME   COUNTRY   ID\n", stdout)
-	require.Equal(t, "no locations found\n", stderr)
-}
-
-func TestLocationListEmptyJSON(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, `{"data":[]}`)
-
-	stdout, _, err := run(t, "location", "list", "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Equal(t, "[]\n", stdout)
-}
-
-func TestLocationListServerError(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
-
-	_, _, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.ErrorContains(t, err, "listing locations")
-}
-
-func TestLocationListMissingToken(t *testing.T) {
-	isolate(t)
-
-	_, stderr, err := run(t, "location", "list")
-	require.ErrorContains(t, err, "no API token")
-	require.NotContains(t, stderr, "Usage:")
-}
-
-func TestLocationListInvalidOutputFormat(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "-o", "yaml", "--token", "tok")
-	require.ErrorContains(t, err, `invalid output format "yaml"`)
-}
-
-func TestLocationListInvalidPage(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "--page", "0", "--token", "tok")
-	require.ErrorContains(t, err, "invalid --page 0")
-}
-
-func TestLocationListInvalidLimit(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "--limit", "1001", "--token", "tok")
-	require.ErrorContains(t, err, "invalid --limit 1001")
-}
-
-func TestLocationListUsesConfigFile(t *testing.T) {
-	path := isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, twoLocations)
-
-	require.NoError(t, os.WriteFile(path,
-		[]byte("token: file-token\napi_base_url: "+srv.URL+"\n"), 0o600))
-
-	stdout, _, err := run(t, "location", "list")
-	require.NoError(t, err)
-	require.Contains(t, stdout, "ANX04")
-}
-
-func TestLocationListRejectsMalformedConfig(t *testing.T) {
-	path := isolate(t)
-	require.NoError(t, os.WriteFile(path, []byte("nope: 1\n"), 0o600))
 
 	_, _, err := run(t, "location", "list")
-	require.ErrorContains(t, err, `unknown config key "nope"`)
-	require.ErrorContains(t, err, path)
+	require.ErrorContains(t, err, `unknown command "location"`)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+}
+
+// TestUsageMistakesExitWithUsageCode pins the exit code for every way a user
+// can get the invocation wrong, since scripts branch on it.
+func TestUsageMistakesExitWithUsageCode(t *testing.T) {
+	isolate(t)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unknown command", []string{"bogus"}, `unknown command "bogus"`},
+		{"unknown command in group", []string{"core", "bogus"}, `unknown command "bogus"`},
+		{"unknown flag", []string{"core", "location", "list", "--bogus"}, "unknown flag: --bogus"},
+		{"too many arguments", []string{"core", "location", "get", "a", "b"}, "accepts 1 arg(s), received 2"},
+		{"missing argument", []string{"core", "location", "get"}, "accepts 1 arg(s), received 0"},
+		{"argument to a group", []string{"config", "view", "extra"}, "unknown command"},
+		{"invalid output format", []string{"core", "location", "list", "-o", "xml"}, "invalid output format"},
+		{"invalid page", []string{"core", "location", "list", "--page", "0"}, "--page 0 must be"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := run(t, tt.args...)
+
+			require.ErrorContains(t, err, tt.want)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err), "%v must exit with the usage code", tt.args)
+		})
+	}
+}
+
+func TestMissingTokenExitsWithAuthCode(t *testing.T) {
+	isolate(t)
+
+	_, _, err := run(t, "core", "location", "list")
+
+	require.ErrorContains(t, err, "not authenticated")
+	require.Equal(t, errmap.ExitAuth, errmap.ExitCode(err))
 }
 
 func TestConfigPath(t *testing.T) {

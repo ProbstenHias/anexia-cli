@@ -66,6 +66,12 @@ linters:
         - httpresponse
     misspell:
       locale: US
+      # go-anxcloud spells the tag assignment field "Organisations" and the
+      # Engine sends "organisation_assignments", so the British spelling has
+      # to appear verbatim in code that touches it.
+      ignore-rules:
+        - organisation
+        - Organisations
     nakedret:
       max-func-lines: 0
     revive:
