@@ -160,6 +160,18 @@ make ci      # fmt-check, vet, lint, test
 Tests exercise the real command tree against `net/http/httptest` servers instead of mocking the
 API client.
 
+## Releasing
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please). Pull requests
+are squash merged and the pull request title becomes the commit subject on `main`, so titles must
+follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/); a CI check enforces
+this. `feat:` bumps the minor version, `fix:` the patch version.
+
+release-please keeps a `chore(release): release X.Y.Z` pull request open that collects those
+subjects into `CHANGELOG.md` and bumps `.release-please-manifest.json`. Merging it tags the
+release, which triggers GoReleaser to build the archives, publish the GitHub release and update the
+Homebrew cask. Nothing is tagged by hand.
+
 ## License
 
 MIT, Matthias Weilinger. See [LICENSE](LICENSE).

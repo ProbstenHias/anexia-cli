@@ -3,3 +3,4 @@ dist/
 coverage.out
 coverage.html
 docs/superpowers/
+.worktrees/
