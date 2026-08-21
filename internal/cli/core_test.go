@@ -343,7 +343,7 @@ func TestCoreTagListPassesFilters(t *testing.T) {
 	srv, last := server(t, http.StatusOK, `{"data":[]}`)
 
 	_, _, err := run(t, "core", "tag", "list",
-		"--query", "pro", "--service", "s-1", "--organization", "o-1",
+		"--name", "pro", "--service", "s-1", "--organization", "o-1",
 		"--order", "name", "--descending",
 		"--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)

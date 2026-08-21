@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -163,6 +164,78 @@ func TestMissingTokenExitsWithAuthCode(t *testing.T) {
 
 	require.ErrorContains(t, err, "not authenticated")
 	require.Equal(t, errmap.ExitAuth, errmap.ExitCode(err))
+}
+
+// TestEngineFailuresExitWithTheDocumentedCode walks the real command tree so
+// the exit-code contract is checked end to end, on both clients. The generic
+// and legacy commands must agree: the client a command happens to use is an
+// implementation detail, not something a script should have to know.
+func TestEngineFailuresExitWithTheDocumentedCode(t *testing.T) {
+	commands := map[string][]string{
+		"generic": {"core", "location", "get", "id-1"},
+		"legacy":  {"core", "tag", "get", "t-1"},
+	}
+
+	statuses := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{"unauthorized", http.StatusUnauthorized, errmap.ExitAuth},
+		{"forbidden", http.StatusForbidden, errmap.ExitAuth},
+		{"not found", http.StatusNotFound, errmap.ExitNotFound},
+		{"too many requests", http.StatusTooManyRequests, errmap.ExitRateLimited},
+		{"server error", http.StatusInternalServerError, errmap.ExitError},
+	}
+
+	for client, args := range commands {
+		for _, tt := range statuses {
+			t.Run(client+" "+tt.name, func(t *testing.T) {
+				isolate(t)
+				srv, _ := server(t, tt.status, `{"error":{"code":`+strconv.Itoa(tt.status)+`,"message":"nope"}}`)
+
+				_, _, err := run(t, append(args, "--token", "tok", "--api-base-url", srv.URL)...)
+
+				require.Error(t, err)
+				require.Equal(t, tt.want, errmap.ExitCode(err))
+			})
+		}
+	}
+}
+
+// TestEngineFailureMessagesAreReadable pins that the legacy client's struct
+// dump never reaches the user.
+func TestEngineFailureMessagesAreReadable(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusNotFound, `{"error":{"code":404,"message":"tag not found"}}`)
+
+	_, _, err := run(t, "core", "tag", "get", "t-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Contains(t, errmap.Message(err), `reading tag "t-1"`)
+	require.Contains(t, errmap.Message(err), "tag not found (404)")
+	require.NotContains(t, errmap.Message(err), "received error from api")
+}
+
+// TestNounsAcceptTheirPlural pins the documented alias on every noun, whether
+// it is registry-driven or hand-written.
+func TestNounsAcceptTheirPlural(t *testing.T) {
+	t.Parallel()
+
+	plurals := []string{"locations", "resources", "tags", "services"}
+
+	for _, plural := range plurals {
+		t.Run(plural, func(t *testing.T) {
+			t.Parallel()
+
+			root := cli.NewRootCommand(cli.Deps{})
+
+			found, _, err := root.Find([]string{"core", plural, "list"})
+
+			require.NoError(t, err)
+			require.Equal(t, "list", found.Name())
+		})
+	}
 }
 
 func TestConfigPath(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.anx.io/go-anxcloud/pkg/api"
+	"go.anx.io/go-anxcloud/pkg/client"
 
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
@@ -103,6 +104,68 @@ func TestExitCodeFromHTTPStatus(t *testing.T) {
 			assert.Equal(t, tt.want, errmap.ExitCode(err))
 		})
 	}
+}
+
+// responseError builds the Engine error the legacy client returns, which
+// reports its status in the decoded body rather than as an api.HTTPError.
+func responseError(status int, message string) error {
+	err := &client.ResponseError{}
+	err.ErrorData.Code = status
+	err.ErrorData.Message = message
+
+	return err
+}
+
+// TestExitCodeFromLegacyStatus pins that a command using the legacy client
+// exits with the same code as one using the generic client.
+func TestExitCodeFromLegacyStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{"unauthorized", http.StatusUnauthorized, errmap.ExitAuth},
+		{"forbidden", http.StatusForbidden, errmap.ExitAuth},
+		{"not found", http.StatusNotFound, errmap.ExitNotFound},
+		{"too many requests", http.StatusTooManyRequests, errmap.ExitRateLimited},
+		{"server error", http.StatusInternalServerError, errmap.ExitError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := fmt.Errorf("listing tags: %w", responseError(tt.status, "nope"))
+
+			assert.Equal(t, tt.want, errmap.ExitCode(err))
+		})
+	}
+}
+
+func TestMessageRewritesLegacyErrorDump(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("reading tag %q: %w", "t-1", responseError(http.StatusNotFound, "tag not found"))
+
+	assert.Equal(t, `reading tag "t-1": tag not found (404)`, errmap.Message(err))
+}
+
+func TestMessageRewritesLegacyErrorWithoutMessage(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("listing tags: %w", responseError(http.StatusInternalServerError, ""))
+
+	assert.Equal(t, "listing tags: the Engine returned status 500", errmap.Message(err))
+}
+
+func TestMessageAddsTokenHintForLegacyForbidden(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("listing tags: %w", responseError(http.StatusForbidden, "denied"))
+
+	assert.Equal(t, "listing tags: denied (403) (check your token with 'anexia config view')", errmap.Message(err))
 }
 
 func TestMessageAddsTokenHint(t *testing.T) {

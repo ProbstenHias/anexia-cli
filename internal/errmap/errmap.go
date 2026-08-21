@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"go.anx.io/go-anxcloud/pkg/api"
+	"go.anx.io/go-anxcloud/pkg/client"
 )
 
 // Exit codes the CLI reports. Scripts can branch on them without parsing
@@ -70,9 +72,10 @@ func ExitCode(err error) int {
 		return ExitTimeout
 	case isRateLimited(err):
 		return ExitRateLimited
-	case errors.Is(err, api.ErrNotFound):
+	case errors.Is(err, api.ErrNotFound), hasStatus(err, http.StatusNotFound):
 		return ExitNotFound
-	case errors.Is(err, ErrAuth), errors.Is(err, api.ErrAccessDenied), hasStatus(err, http.StatusUnauthorized):
+	case errors.Is(err, ErrAuth), errors.Is(err, api.ErrAccessDenied),
+		hasStatus(err, http.StatusUnauthorized), hasStatus(err, http.StatusForbidden):
 		return ExitAuth
 	default:
 		return ExitError
@@ -92,10 +95,20 @@ func isRateLimited(err error) bool {
 }
 
 // hasStatus reports whether err carries the given HTTP status from the Engine.
+//
+// The two go-anxcloud clients report status differently: the generic one
+// returns api.HTTPError, the legacy one returns *client.ResponseError with the
+// status in its decoded body. Both are checked so a command's exit code does
+// not depend on which client it happens to use.
 func hasStatus(err error, status int) bool {
 	var httpErr api.HTTPError
 	if errors.As(err, &httpErr) {
 		return httpErr.StatusCode() == status
+	}
+
+	var responseErr *client.ResponseError
+	if errors.As(err, &responseErr) {
+		return responseErr.ErrorData.Code == status
 	}
 
 	return false
@@ -104,12 +117,33 @@ func hasStatus(err error, status int) bool {
 // Message renders err for the user, adding a hint for the failures where the
 // Engine's own wording is not actionable on its own.
 func Message(err error) string {
+	text := readable(err)
+
 	switch {
-	case errors.Is(err, api.ErrAccessDenied), hasStatus(err, http.StatusUnauthorized):
-		return fmt.Sprintf("%v (check your token with 'anexia config view')", err)
-	case ExitCode(err) == ExitRateLimited:
-		return fmt.Sprintf("%v (retry later or lower the request rate)", err)
+	case errors.Is(err, api.ErrAccessDenied), hasStatus(err, http.StatusUnauthorized),
+		hasStatus(err, http.StatusForbidden):
+		return text + " (check your token with 'anexia config view')"
+	case isRateLimited(err):
+		return text + " (retry later or lower the request rate)"
 	default:
+		return text
+	}
+}
+
+// readable replaces the legacy client's struct dump with the message and
+// status the Engine actually sent, keeping the calling command's prefix.
+func readable(err error) string {
+	var responseErr *client.ResponseError
+	if !errors.As(err, &responseErr) {
 		return err.Error()
 	}
+
+	data := responseErr.ErrorData
+
+	replacement := fmt.Sprintf("%s (%d)", data.Message, data.Code)
+	if data.Message == "" {
+		replacement = fmt.Sprintf("the Engine returned status %d", data.Code)
+	}
+
+	return strings.Replace(err.Error(), responseErr.Error(), replacement, 1)
 }
