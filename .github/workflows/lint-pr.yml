@@ -1,0 +1,43 @@
+name: Lint PR
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  # Pull requests are squash merged with `squash_merge_commit_title=PR_TITLE`, so
+  # the title of every pull request becomes verbatim the subject line of the only
+  # commit that reaches main. release-please parses those subjects to decide the
+  # next version and to write CHANGELOG.md, so an unconventional title silently
+  # produces a wrong release. Linting the title is therefore enough; the commits
+  # inside the branch never reach main and are deliberately left alone.
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Kept in sync with the changelog-sections in release-please-config.json.
+          types: |
+            feat
+            fix
+            perf
+            revert
+            docs
+            refactor
+            test
+            build
+            ci
+            chore
+            style
+          requireScope: false
+          subjectPattern: ^(?![A-Z])(?!.*\.$).+$
+          subjectPatternError: |
+            The subject "{subject}" found in the pull request title "{title}"
+            didn't match the configured pattern. Please ensure that the subject
+            starts with a lowercase letter and does not end with a period.
