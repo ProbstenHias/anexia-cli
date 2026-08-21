@@ -160,6 +160,17 @@ make ci      # fmt-check, vet, lint, test
 Tests exercise the real command tree against `net/http/httptest` servers instead of mocking the
 API client.
 
+## Dependency updates
+
+[Dependabot](.github/dependabot.yml) opens pull requests every Monday for Go modules and GitHub
+Actions. Minor and patch bumps arrive grouped in one pull request, majors come separately so a
+breaking change is never buried. Titles are generated as `chore(deps): ...` and `ci(deps): ...` so
+they pass the conventional commit check, and both types are hidden from the changelog.
+
+Dependabot decides the capitalisation of the subject from recent commit subjects rather than from
+its configuration, so if a pull request ever arrives titled `chore(deps): Bump ...` the title check
+will fail on the leading capital and the title has to be edited by hand.
+
 ## Releasing
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please). Pull requests

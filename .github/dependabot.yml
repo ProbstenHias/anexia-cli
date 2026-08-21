@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  # Pull request titles become the squash commit subject on main, where
+  # release-please parses them, and lint-pr.yml rejects anything that is not a
+  # conventional commit. `prefix: chore` plus `include: scope` makes Dependabot
+  # open "chore(deps): bump ..." which satisfies both.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Only minor and patch bumps are grouped, so every major dependency gets
+    # its own pull request. The default limit of five would silently stop
+    # opening them in a week with several majors.
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Patch and minor bumps are reviewed as one pull request; majors stay
+      # separate so a breaking change is never hidden among routine updates.
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
