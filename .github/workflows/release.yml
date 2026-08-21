@@ -2,24 +2,42 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  # release-please keeps a pull request open that bumps CHANGELOG.md and
+  # .release-please-manifest.json. Merging it tags the release, which is what
+  # gates the goreleaser steps below.
+  #
+  # GoReleaser has to run in this same workflow rather than in a separate one
+  # triggered by the new tag: GitHub does not start workflow runs for events
+  # raised by GITHUB_TOKEN, and tag pushes are not one of the documented
+  # exceptions, so an `on: push: tags` trigger would never fire.
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
       - uses: actions/checkout@v7
+        if: ${{ steps.release.outputs.release_created }}
         with:
           fetch-depth: 0
 
       - uses: actions/setup-go@v7
+        if: ${{ steps.release.outputs.release_created }}
         with:
           go-version-file: go.mod
 
       - uses: goreleaser/goreleaser-action@v7
+        if: ${{ steps.release.outputs.release_created }}
         with:
           version: v2.17.1
           args: release --clean

@@ -61,24 +61,9 @@ homebrew_casks:
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/anexia"]
           end
 
+# release-please owns the changelog. It writes CHANGELOG.md and the release notes
+# before goreleaser runs, so letting goreleaser generate its own notes would only
+# duplicate them. The release itself already exists by then and `release.mode`
+# defaults to keep-existing, so goreleaser just uploads the artifacts.
 changelog:
-  groups:
-    - title: Features
-      regexp: '^.*?feat(\(.+\))??!?:.+$'
-      order: 0
-    - title: Bug fixes
-      regexp: '^.*?fix(\(.+\))??!?:.+$'
-      order: 1
-    - title: Performance
-      regexp: '^.*?perf(\(.+\))??!?:.+$'
-      order: 2
-    - title: Refactors
-      regexp: '^.*?refactor(\(.+\))??!?:.+$'
-      order: 3
-    - title: Others
-      order: 999
-  filters:
-    exclude:
-      - '^docs'
-      - '^test'
-      - '^chore'
+  disable: true
