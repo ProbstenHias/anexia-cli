@@ -28,6 +28,7 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 	var (
 		page         int
 		limit        int
+		all          bool
 		name         string
 		service      string
 		organization string
@@ -60,7 +61,11 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 			// The legacy client names its last parameter sortAscending but
 			// sends it as sort_descending, so it is inverted here to make the
 			// flag mean what it says.
-			found, err := tags.NewAPI(c).List(ctx, page, limit, name, service, organization, order, descending)
+			a := tags.NewAPI(c)
+
+			found, err := resource.FetchPages(page, limit, all, func(p int) ([]tags.Summary, error) {
+				return a.List(ctx, p, limit, name, service, organization, order, descending)
+			})
 			if err != nil {
 				return opts.Fail(fmt.Errorf("listing tags: %w", err))
 			}
@@ -75,7 +80,7 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	resource.RegisterPagingFlags(flags, &page, &limit, "tags")
+	resource.RegisterPagingFlags(flags, &page, &limit, &all, "tags")
 	flags.StringVar(&name, "name", "", "filter by tag name")
 	flags.StringVar(&service, "service", "", "filter by service identifier")
 	flags.StringVar(&organization, "organization", "", "filter by organization identifier")
@@ -113,14 +118,18 @@ func newCoreTagGetCommand(opts *globalOptions) *cobra.Command {
 				return w.Object(info)
 			}
 
+			// A tag is listed once per organisation it is assigned to. An
+			// unassigned tag drops those two columns rather than padding
+			// them, which would emit trailing empty fields in tsv.
+			if len(info.Organisations) == 0 {
+				return w.Table([]string{"name", "identifier"},
+					[][]string{{info.Name, info.Identifier}})
+			}
+
 			rows := make([][]string, 0, len(info.Organisations))
 			for i := range info.Organisations {
 				o := &info.Organisations[i]
 				rows = append(rows, []string{info.Name, info.Identifier, o.Service.Name, o.Customer.Name})
-			}
-
-			if len(rows) == 0 {
-				rows = append(rows, []string{info.Name, info.Identifier, "", ""})
 			}
 
 			return w.Table([]string{"name", "identifier", "service", "customer"}, rows)

@@ -2,8 +2,11 @@ package cli_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -294,6 +297,53 @@ func TestCoreServiceList(t *testing.T) {
 		stdout)
 }
 
+// TestCoreServiceListAllWalksPages pins that --all works the same on a command
+// written against the legacy client, which reports no page metadata at all.
+func TestCoreServiceListAllWalksPages(t *testing.T) {
+	isolate(t)
+
+	var seen []int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		seen = append(seen, page)
+
+		// Two services per page until page three, which is short and ends
+		// the walk.
+		names := []string{"a", "b"}
+		if page >= 3 {
+			names = names[:1]
+		}
+
+		services := make([]map[string]string, 0, len(names))
+		for _, n := range names {
+			services = append(services, map[string]string{
+				"identifier": fmt.Sprintf("s-%d-%s", page, n),
+				"name":       n,
+			})
+		}
+
+		body, err := json.Marshal(map[string]any{"data": services})
+		require.NoError(t, err)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	stdout, _, err := run(t, "core", "service", "list", "--all", "--limit", "2",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, []int{1, 2, 3}, seen)
+
+	for _, want := range []string{"s-1-a", "s-1-b", "s-2-a", "s-2-b", "s-3-a"} {
+		require.Contains(t, stdout, want)
+	}
+}
+
 func TestCoreServiceListEmpty(t *testing.T) {
 	isolate(t)
 	srv, _ := server(t, http.StatusOK, `{"data":[]}`)
@@ -399,13 +449,17 @@ func TestCoreTagGet(t *testing.T) {
 		stdout)
 }
 
+// TestCoreTagGetWithoutAssignments pins that an unassigned tag drops the
+// per-organisation columns instead of padding them, which would leave trailing
+// empty fields in tsv.
 func TestCoreTagGetWithoutAssignments(t *testing.T) {
 	isolate(t)
 	srv, _ := server(t, http.StatusOK, `{"name":"prod","identifier":"t-1"}`)
 
-	stdout, _, err := run(t, "core", "tag", "get", "t-1", "--token", "tok", "--api-base-url", srv.URL)
+	stdout, _, err := run(t, "core", "tag", "get", "t-1", "-o", "tsv",
+		"--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
-	require.Contains(t, stdout, "prod   t-1")
+	require.Equal(t, "name\tidentifier\nprod\tt-1\n", stdout)
 }
 
 func TestCoreTagGetJSON(t *testing.T) {

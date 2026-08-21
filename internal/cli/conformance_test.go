@@ -1,6 +1,8 @@
 package cli_test
 
 import (
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,33 +160,75 @@ func TestConformanceRelationListsOmitPagingFlags(t *testing.T) {
 	}
 }
 
-// TestConformanceErrorMessagesReadAsActionThenCause checks the documented
-// error shape on the failure every command can produce without a server.
+// invocation builds a command line that satisfies cmd's own argument and flag
+// requirements, so the command reaches the Engine instead of failing to parse.
+// Requirements are read off the command rather than guessed, which keeps this
+// working as the tree grows.
+func invocation(cmd *cobra.Command) []string {
+	args := strings.Fields(strings.TrimPrefix(cmd.CommandPath(), "anexia "))
+
+	for n := range 4 {
+		if cmd.ValidateArgs(make([]string, n)) == nil {
+			for range n {
+				args = append(args, "placeholder")
+			}
+
+			break
+		}
+	}
+
+	// Flags a command requires to get past its own validation. Only those
+	// it actually defines are passed, so no command sees an unknown flag.
+	for _, name := range []string{"name", "service"} {
+		if cmd.Flags().Lookup(name) != nil {
+			args = append(args, "--"+name, "placeholder")
+		}
+	}
+
+	return args
+}
+
+// TestConformanceErrorMessagesReadAsActionThenCause pins the documented error
+// shape against a real Engine failure. Every command has to name the action it
+// was performing before the cause, so the message reads as a sentence.
 func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
-	isolate(t)
+	// isolate sets environment variables, so this test cannot be parallel.
+	configPath := isolate(t)
+
+	srv, _ := server(t, http.StatusInternalServerError, `{"error":{"code":500,"message":"boom"}}`)
+
+	require.NoError(t, os.WriteFile(configPath,
+		[]byte("token: tok\napi_base_url: "+srv.URL+"\n"), 0o600))
+
+	checked := 0
 
 	for _, cmd := range commands(t) {
 		if cmd.HasSubCommands() || !strings.HasPrefix(cmd.CommandPath(), "anexia core ") {
 			continue
 		}
 
-		args := strings.Fields(strings.TrimPrefix(path(cmd), "anexia "))
+		full := cmd.CommandPath()
 
-		// Feed placeholder identifiers so argument validation passes and
-		// the command reaches its authentication failure.
-		for range 2 {
-			args = append(args, "placeholder")
-		}
-
-		_, _, err := runWithInput(t, "y\n", append(args, "--service", "placeholder")...)
-
-		require.Error(t, err, "%s: expected a failure without a token", path(cmd))
+		_, _, err := runWithInput(t, "y\n", invocation(cmd)...)
+		require.Error(t, err, "%s: expected the Engine failure to surface", full)
 
 		message := errmap.Message(err)
 
-		assert.Equal(t, strings.ToLower(message[:1]), message[:1], "%s: %q must start lowercase", path(cmd), message)
-		assert.False(t, strings.HasSuffix(message, "."), "%s: %q must not end in a period", path(cmd), message)
+		require.False(t, strings.HasPrefix(message, "invalid usage:"),
+			"%s: %q never reached the Engine, so the error shape is untested", full, message)
+
+		action, _, found := strings.Cut(message, ": ")
+		require.True(t, found, "%s: %q must read as \"<action>: <cause>\"", full, message)
+
+		assert.Equal(t, strings.ToLower(action[:1]), action[:1], "%s: %q must start lowercase", full, message)
+		assert.False(t, strings.HasSuffix(message, "."), "%s: %q must not end in a period", full, message)
+		assert.NotContains(t, message, "received error from api",
+			"%s: %q leaks the legacy client's struct dump", full, message)
+
+		checked++
 	}
+
+	assert.Positive(t, checked, "the tree should have engine commands to check")
 }
 
 func TestConformanceEveryCommandHasShortHelp(t *testing.T) {
@@ -273,7 +317,7 @@ func TestConformanceCollectionListsSharePagingFlags(t *testing.T) {
 
 		seen++
 
-		for _, name := range []string{"page", "limit"} {
+		for _, name := range []string{"page", "limit", "all"} {
 			assert.NotNil(t, cmd.Flags().Lookup(name), "%s: every collection list must accept --%s", path(cmd), name)
 		}
 	}

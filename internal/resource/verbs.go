@@ -27,8 +27,7 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 	}
 
 	flags := cmd.Flags()
-	RegisterPagingFlags(flags, &page, &limit, spec.plural())
-	flags.BoolVar(&all, "all", false, "fetch every page instead of just one")
+	RegisterPagingFlags(flags, &page, &limit, &all, spec.plural())
 
 	var applyFilters func(*O)
 	if spec.Filters != nil {
@@ -69,13 +68,19 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 	return cmd
 }
 
+// maxPages bounds an --all walk. Nothing in the Engine's contract forces a
+// paged endpoint to ever report a last page, so the walk needs a backstop that
+// does not depend on the server behaving.
+const maxPages = 1000
+
 // fetch reads one page of objects, or every page from the requested one on
 // when all is set.
 //
 // Each page is a fresh List with an explicit page number rather than a walk
 // over types.PageInfo. PageInfo.Next replays the page List already fetched on
 // its first call while still advancing its internal counter, so driving the
-// loop with it skips a page whenever the caller starts past page one.
+// loop with it skips a page whenever the caller starts past page one. Next is
+// still called, but only to decode the body already in hand.
 func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page, limit int, all bool) ([]O, error) {
 	items := make([]O, 0, limit)
 
@@ -84,6 +89,9 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 		if err := a.List(ctx, filter, api.Paged(uint(p), uint(limit), &info)); err != nil {
 			return nil, err
 		}
+
+		// Read the reported page before Next, which advances the counter.
+		reported := info.CurrentPage()
 
 		var pageItems []O
 
@@ -95,9 +103,19 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 
 		items = append(items, pageItems...)
 
-		// Stop on a short page as well as an empty one: an endpoint that
-		// ignores the page parameter would otherwise loop until --timeout.
-		if !all || len(pageItems) < limit {
+		if !all {
+			break
+		}
+
+		// Compare against the page size the Engine applied, not the one
+		// asked for: an endpoint that caps page size below --limit would
+		// otherwise look like a short page and cut the walk short.
+		size := int(info.ItemsPerPage())
+		if size <= 0 {
+			size = limit
+		}
+
+		if len(pageItems) < size {
 			break
 		}
 
@@ -105,6 +123,21 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 		// there is no reason to ask for anything beyond it.
 		if total := info.TotalPages(); total > 0 && uint(p) >= total {
 			break
+		}
+
+		// An endpoint that ignores the page parameter answers every request
+		// with the same page, so the walk would never end. The library
+		// reports page one as zero, hence the normalization.
+		if reported == 0 {
+			reported = 1
+		}
+
+		if reported != uint(p) {
+			break
+		}
+
+		if p-page+1 >= maxPages {
+			return nil, fmt.Errorf("gave up after %d pages: raise --limit or drop --all", maxPages)
 		}
 	}
 
@@ -145,11 +178,38 @@ func newGetCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comma
 	}
 }
 
-// RegisterPagingFlags declares --page and --limit. Commands written against
-// the legacy client call this too, so paging looks identical everywhere.
-func RegisterPagingFlags(flags *pflag.FlagSet, page, limit *int, plural string) {
+// RegisterPagingFlags declares --page, --limit and --all. Commands written
+// against the legacy client call this too, so paging looks identical
+// everywhere.
+func RegisterPagingFlags(flags *pflag.FlagSet, page, limit *int, all *bool, plural string) {
 	flags.IntVar(page, "page", 1, "page number to fetch")
 	flags.IntVar(limit, "limit", 50, "maximum number of "+plural+" per page")
+	flags.BoolVar(all, "all", false, "fetch every page instead of just one")
+}
+
+// FetchPages walks pages by calling get once per page, for commands written
+// against the legacy client. Those clients return a bare slice with no page
+// metadata, so a page shorter than the limit is the only end-of-results signal
+// available; maxPages backstops an Engine that never produces one.
+func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error)) ([]T, error) {
+	items := make([]T, 0, limit)
+
+	for p := page; ; p++ {
+		pageItems, err := get(p)
+		if err != nil {
+			return nil, err
+		}
+
+		items = append(items, pageItems...)
+
+		if !all || len(pageItems) < limit {
+			return items, nil
+		}
+
+		if p-page+1 >= maxPages {
+			return nil, fmt.Errorf("gave up after %d pages: raise --limit or drop --all", maxPages)
+		}
+	}
 }
 
 // ValidatePaging rejects out-of-range paging flags. Commands written against

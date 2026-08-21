@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.anx.io/go-anxcloud/pkg/api"
 	corev1 "go.anx.io/go-anxcloud/pkg/apis/core/v1"
-	"go.anx.io/go-anxcloud/pkg/client"
 
 	"github.com/ProbstenHias/anexia-cli/internal/anx"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
@@ -58,10 +58,9 @@ func locationSpec() resource.Spec[corev1.Location, *corev1.Location] {
 
 // env implements resource.Env against a test server.
 type env struct {
-	baseURL   string
-	format    output.Format
-	assumeYes bool
-	noAPI     bool
+	baseURL string
+	format  output.Format
+	noAPI   bool
 }
 
 func (e *env) Writer(out io.Writer) (*output.Writer, error) {
@@ -80,20 +79,12 @@ func (e *env) API(*pflag.FlagSet) (api.API, error) {
 	return anx.NewAPI(e.options())
 }
 
-func (e *env) Client(*pflag.FlagSet) (client.Client, error) {
-	return anx.NewClient(e.options())
-}
-
 func (*env) Context(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, 10*time.Second)
 }
 
 func (*env) Fail(err error) error {
 	return err
-}
-
-func (e *env) AssumeYes() bool {
-	return e.assumeYes
 }
 
 // request records what the test server received.
@@ -350,18 +341,89 @@ func TestListAllStopsOnShortPage(t *testing.T) {
 	assert.Contains(t, stdout, "id-3")
 }
 
-// TestListAllStopsWhenPagingIsIgnored guards against the endpoint that returns
-// the same full page whatever page is asked for. Without a stop condition the
-// walk would run until --timeout.
+// TestListAllStopsWhenPagingIsIgnored guards against the endpoint that answers
+// every request with the same full page and reports no total. Nothing about the
+// response says "last page", so the walk has to notice the page number it got
+// back is not the one it asked for. Without that the walk runs until --timeout.
 func TestListAllStopsWhenPagingIsIgnored(t *testing.T) {
 	t.Parallel()
 
-	e, seen := serve(t, paged(t, 1, 1, 1, corev1.Location{Identifier: "id-1"}))
+	e, seen := serve(t, paged(t, 1, 0, 1, corev1.Location{Identifier: "id-1"}))
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+
+	require.NoError(t, err)
+	assert.Len(t, *seen, 2, "one request for the asked-for page, one to notice paging is ignored")
+	assert.Contains(t, stdout, "id-1")
+}
+
+// TestListAllWalksPagesCappedBelowTheLimit covers an Engine that caps its page
+// size below --limit. Comparing the page length against the requested limit
+// would read every page as short and silently drop the rest of the results.
+func TestListAllWalksPagesCappedBelowTheLimit(t *testing.T) {
+	t.Parallel()
+
+	// Two objects per page regardless of the requested limit of 10, three
+	// pages in total, with no total_pages to fall back on.
+	var seen []int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		seen = append(seen, page)
+
+		objects := []corev1.Location{
+			{Identifier: fmt.Sprintf("id-p%d-a", page)},
+			{Identifier: fmt.Sprintf("id-p%d-b", page)},
+		}
+		if page >= 3 {
+			objects = objects[:1]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(paged(t, page, 0, 2, objects...)))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "10")
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3}, seen)
+
+	for _, want := range []string{"id-p1-a", "id-p1-b", "id-p2-a", "id-p2-b", "id-p3-a"} {
+		assert.Contains(t, stdout, want)
+	}
+}
+
+// TestListAllGivesUpOnAnEndlessEngine is the backstop: an Engine that keeps
+// answering with full pages that track the requested page number, forever.
+func TestListAllGivesUpOnAnEndlessEngine(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		requests++
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(paged(t, page, 0, 1,
+			corev1.Location{Identifier: fmt.Sprintf("id-p%d", page)})))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
 
 	_, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
 
-	require.NoError(t, err)
-	assert.Len(t, *seen, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gave up after 1000 pages")
+	assert.Equal(t, 1000, requests)
 }
 
 func TestListWithoutAllFetchesOnePage(t *testing.T) {
@@ -522,6 +584,93 @@ func TestListStructuredOutputEmpty(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.JSONEq(t, `[]`, stdout)
+}
+
+// TestFetchPagesWalksUntilAShortPage covers the paging helper the legacy
+// commands share. Those clients report no page metadata, so a page shorter
+// than the limit is the only end-of-results signal.
+func TestFetchPagesWalksUntilAShortPage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		startPage int
+		all       bool
+		wantPages []int
+		wantItems []string
+	}{
+		{
+			name:      "one page without all",
+			startPage: 2,
+			all:       false,
+			wantPages: []int{2},
+			wantItems: []string{"p2-a", "p2-b"},
+		},
+		{
+			name:      "every page from the first",
+			startPage: 1,
+			all:       true,
+			wantPages: []int{1, 2, 3},
+			wantItems: []string{"p1-a", "p1-b", "p2-a", "p2-b", "p3-a"},
+		},
+		{
+			name:      "every page from a later one",
+			startPage: 2,
+			all:       true,
+			wantPages: []int{2, 3},
+			wantItems: []string{"p2-a", "p2-b", "p3-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen []int
+
+			// Two items per page until page three, which is short.
+			items, err := resource.FetchPages(tt.startPage, 2, tt.all, func(p int) ([]string, error) {
+				seen = append(seen, p)
+
+				if p >= 3 {
+					return []string{fmt.Sprintf("p%d-a", p)}, nil
+				}
+
+				return []string{fmt.Sprintf("p%d-a", p), fmt.Sprintf("p%d-b", p)}, nil
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPages, seen)
+			assert.Equal(t, tt.wantItems, items)
+		})
+	}
+}
+
+func TestFetchPagesReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	_, err := resource.FetchPages(1, 2, true, func(int) ([]string, error) {
+		return nil, errors.New("boom")
+	})
+
+	require.ErrorContains(t, err, "boom")
+}
+
+// TestFetchPagesGivesUpOnAnEndlessEngine is the backstop for a legacy endpoint
+// that keeps answering with full pages.
+func TestFetchPagesGivesUpOnAnEndlessEngine(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+
+	_, err := resource.FetchPages(1, 1, true, func(int) ([]string, error) {
+		calls++
+
+		return []string{"always"}, nil
+	})
+
+	require.ErrorContains(t, err, "gave up after 1000 pages")
+	assert.Equal(t, 1000, calls)
 }
 
 func TestRenderListIsSharedWithLegacyCommands(t *testing.T) {

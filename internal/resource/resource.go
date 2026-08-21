@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/pflag"
 	"go.anx.io/go-anxcloud/pkg/api"
 	"go.anx.io/go-anxcloud/pkg/api/types"
-	"go.anx.io/go-anxcloud/pkg/client"
 
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 	"github.com/ProbstenHias/anexia-cli/internal/output"
@@ -20,21 +19,19 @@ import (
 // MaxLimit is the largest page size the CLI accepts.
 const MaxLimit = 1000
 
-// Env is what commands need from the CLI's global options. The cli package
-// implements it, which keeps this package free of flag-parsing concerns.
+// Env is what this package needs from the CLI's global options, which keeps it
+// free of flag-parsing concerns. Commands written against the legacy client
+// reach for the concrete options type instead, so nothing legacy-only belongs
+// here.
 type Env interface {
 	// Writer builds an output writer for the requested format.
 	Writer(out io.Writer) (*output.Writer, error)
 	// API builds the generic go-anxcloud client.
 	API(flags *pflag.FlagSet) (api.API, error)
-	// Client builds the legacy go-anxcloud client.
-	Client(flags *pflag.FlagSet) (client.Client, error)
 	// Context derives a request context honoring --timeout.
 	Context(parent context.Context) (context.Context, context.CancelFunc)
 	// Fail annotates an error before it reaches the user.
 	Fail(err error) error
-	// AssumeYes reports whether --yes was passed.
-	AssumeYes() bool
 }
 
 // Pointer constrains PO to be the pointer type of O that implements the
@@ -55,12 +52,8 @@ type Column[O any] struct {
 }
 
 // Spec declares a resource: its command name, how it renders, and which verbs
-// it supports.
-//
-// Only the read verbs exist so far, because every resource the CLI reaches
-// today is read-only in the Engine. create, update and delete belong here too
-// and land with the first resource that needs them, along with the --wait
-// handling their asynchronous cousins require.
+// it supports. Only the read verbs exist so far; see docs/cli-design.md for
+// why, and for what the write verbs will look like.
 type Spec[O any, PO Pointer[O]] struct {
 	// Noun is the command name, singular and lowercase.
 	Noun string

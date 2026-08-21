@@ -106,11 +106,20 @@ func TestExitCodeFromHTTPStatus(t *testing.T) {
 	}
 }
 
-// responseError builds the Engine error the legacy client returns, which
-// reports its status in the decoded body rather than as an api.HTTPError.
+// responseError builds the Engine error the legacy client returns for a
+// response whose body echoes the status, which is the common case.
 func responseError(status int, message string) error {
-	err := &client.ResponseError{}
+	err := bodylessResponseError(status, message)
 	err.ErrorData.Code = status
+
+	return err
+}
+
+// bodylessResponseError builds the same error for a response whose body does
+// not carry the status. Only the HTTP response has it, so anything reading the
+// decoded body alone misclassifies these.
+func bodylessResponseError(status int, message string) *client.ResponseError {
+	err := &client.ResponseError{Response: &http.Response{StatusCode: status}}
 	err.ErrorData.Message = message
 
 	return err
@@ -142,6 +151,43 @@ func TestExitCodeFromLegacyStatus(t *testing.T) {
 			assert.Equal(t, tt.want, errmap.ExitCode(err))
 		})
 	}
+}
+
+// TestExitCodeFromLegacyStatusWithoutBodyCode covers the Engine that answers
+// with a status but a body that does not repeat it. The HTTP response carries
+// the truth, so classification must not depend on the body.
+func TestExitCodeFromLegacyStatusWithoutBodyCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{"unauthorized", http.StatusUnauthorized, errmap.ExitAuth},
+		{"forbidden", http.StatusForbidden, errmap.ExitAuth},
+		{"not found", http.StatusNotFound, errmap.ExitNotFound},
+		{"too many requests", http.StatusTooManyRequests, errmap.ExitRateLimited},
+		{"server error", http.StatusInternalServerError, errmap.ExitError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := fmt.Errorf("listing tags: %w", bodylessResponseError(tt.status, ""))
+
+			assert.Equal(t, tt.want, errmap.ExitCode(err))
+		})
+	}
+}
+
+func TestMessageReportsTheStatusWithoutABodyCode(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("reading tag %q: %w", "t-1", bodylessResponseError(http.StatusNotFound, "nope"))
+
+	assert.Equal(t, `reading tag "t-1": nope (404)`, errmap.Message(err))
 }
 
 func TestMessageRewritesLegacyErrorDump(t *testing.T) {
@@ -181,6 +227,18 @@ func TestMessageAddsTokenHintForUnauthorized(t *testing.T) {
 
 	err := fmt.Errorf("listing locations: %w", httpError(t, http.StatusUnauthorized))
 
+	assert.Contains(t, errmap.Message(err), "check your token with 'anexia config view'")
+}
+
+// TestMessageAddsTokenHintForMissingCredentials pins that every error which
+// exits with ExitAuth also gets the hint. Message and ExitCode classify through
+// the same switch, so the two cannot disagree.
+func TestMessageAddsTokenHintForMissingCredentials(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("%w: pass --token", errmap.ErrAuth)
+
+	require.Equal(t, errmap.ExitAuth, errmap.ExitCode(err))
 	assert.Contains(t, errmap.Message(err), "check your token with 'anexia config view'")
 }
 

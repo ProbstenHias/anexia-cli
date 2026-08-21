@@ -188,19 +188,72 @@ func TestEngineFailuresExitWithTheDocumentedCode(t *testing.T) {
 		{"server error", http.StatusInternalServerError, errmap.ExitError},
 	}
 
+	// The Engine does not always repeat its status in the response body, and
+	// the exit code must not depend on whether it does.
+	bodies := map[string]func(int) string{
+		"body echoes the status": func(status int) string {
+			return `{"error":{"code":` + strconv.Itoa(status) + `,"message":"nope"}}`
+		},
+		"body omits the status": func(int) string {
+			return `{"error":{"message":"nope"}}`
+		},
+	}
+
 	for client, args := range commands {
-		for _, tt := range statuses {
-			t.Run(client+" "+tt.name, func(t *testing.T) {
-				isolate(t)
-				srv, _ := server(t, tt.status, `{"error":{"code":`+strconv.Itoa(tt.status)+`,"message":"nope"}}`)
+		for body, render := range bodies {
+			for _, tt := range statuses {
+				t.Run(client+" "+body+" "+tt.name, func(t *testing.T) {
+					isolate(t)
+					srv, _ := server(t, tt.status, render(tt.status))
 
-				_, _, err := run(t, append(args, "--token", "tok", "--api-base-url", srv.URL)...)
+					_, _, err := run(t, append(args, "--token", "tok", "--api-base-url", srv.URL)...)
 
-				require.Error(t, err)
-				require.Equal(t, tt.want, errmap.ExitCode(err))
-			})
+					require.Error(t, err)
+					require.Equal(t, tt.want, errmap.ExitCode(err))
+				})
+			}
 		}
 	}
+}
+
+// TestTimeoutExitsWithTimeoutCode pins exit code 5 on both clients.
+func TestTimeoutExitsWithTimeoutCode(t *testing.T) {
+	commands := map[string][]string{
+		"generic": {"core", "location", "list"},
+		"legacy":  {"core", "tag", "list"},
+	}
+
+	for client, args := range commands {
+		t.Run(client, func(t *testing.T) {
+			isolate(t)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				<-r.Context().Done()
+			}))
+			t.Cleanup(srv.Close)
+
+			_, _, err := run(t, append(args,
+				"--timeout", "20ms", "--token", "tok", "--api-base-url", srv.URL)...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitTimeout, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), "raise it with --timeout")
+		})
+	}
+}
+
+// TestDeclinedConfirmationExitsWithCanceledCode pins exit code 7.
+func TestDeclinedConfirmationExitsWithCanceledCode(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderrText, err := runWithInput(t, "n\n", "core", "tag", "delete", "t-1",
+		"--service", "s-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Contains(t, stderrText, `delete tag "t-1"`)
+	require.Empty(t, last.path, "a declined confirmation must not reach the Engine")
 }
 
 // TestEngineFailureMessagesAreReadable pins that the legacy client's struct

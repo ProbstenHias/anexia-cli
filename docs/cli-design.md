@@ -90,6 +90,13 @@ Every `list` over a collection accepts the same paging flags: `--page` (default 
 `resource tag list` do not, because the items come back inside the parent object and there is
 nothing to page over.
 
+`--all` stops when a page comes back shorter than the page size the Engine actually applied, when
+the Engine reports it has run out of pages, or when the Engine hands back a page number other
+than the one asked for, which is what an endpoint that ignores paging does. Failing all of those
+it gives up after a thousand pages rather than looping until `--timeout`. Comparing against the
+requested `--limit` instead of the applied page size would silently truncate the walk against an
+Engine that caps page size, so it must not be used for this.
+
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
 
@@ -204,8 +211,13 @@ an auth failure suggests `anexia config view`, and a rate limit suggests retryin
 timeout says what the timeout was and that `--timeout` raises it.
 
 The code must not depend on which go-anxcloud client a command happens to use. The two report
-status differently, the generic one as `api.HTTPError` and the legacy one as a status inside
-`client.ResponseError`, so `errmap` reads both. A 404 is exit 4 either way.
+status differently, the generic one as `api.HTTPError` and the legacy one as `client.ResponseError`,
+so `errmap` reads both. A 404 is exit 4 either way. For the legacy shape the status comes off the
+HTTP response, not the `code` field in the decoded body: the Engine does not always repeat its
+status there, and reading the body alone turns those failures into exit 1.
+
+The hint and the exit code are decided by the same classification, so a message can never
+disagree with the code the process exits with.
 
 ## How this is enforced
 
@@ -234,9 +246,13 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
 hand against the legacy client (`core tag` and `core service` are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
-the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `RenderList` for output.
-Reach for those before writing a variant. When the generic client gains the object, the
-hand-written command is replaced by a `Spec` and the behavior does not change.
+the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
+`RenderList` for output. Reach for those before writing a variant. When the generic client gains
+the object, the hand-written command is replaced by a `Spec` and the behavior does not change.
+
+Every divergence between the two halves that users could observe has been a bug so far: a missing
+plural alias, an exit code that depended on the client, a `--all` flag present on one half only.
+Sharing a helper is how that stops happening.
 
 The conformance test checks the rules that a registry cannot: verb vocabulary, singular nouns
 carrying a plural alias, help text present and not ending in a period, groups printing help,
@@ -244,6 +260,12 @@ argument validators present, positional arguments documented, paging flags prese
 lists and absent from relation lists, error messages reading as action then cause, flag naming,
 and no local flag shadowing a global one.
 
+The error-shape check drives each command with arguments derived from its own `Args` validator and
+flag set, and fails if a command never got past parsing. A conformance test that only ever
+observes `invalid usage:` proves nothing, which is exactly how it was wrong once.
+
 Two rules are checked by targeted tests rather than by walking the tree, because they need a
-server to observe: `--all` requesting every page exactly once from any starting page
-(`internal/resource`), and the exit-code table holding on both clients (`internal/cli`).
+server to observe: `--all` requesting every page exactly once from any starting page, and
+terminating against an Engine that caps page size, ignores paging, or never stops
+(`internal/resource`); and the exit-code table holding on both clients whether or not the Engine
+repeats its status in the response body (`internal/cli`).

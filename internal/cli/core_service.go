@@ -21,6 +21,7 @@ func newCoreServiceListCommand(opts *globalOptions) *cobra.Command {
 	var (
 		page  int
 		limit int
+		all   bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,7 +46,11 @@ func newCoreServiceListCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			found, err := service.NewAPI(c).List(ctx, page, limit)
+			a := service.NewAPI(c)
+
+			found, err := resource.FetchPages(page, limit, all, func(p int) ([]service.Service, error) {
+				return a.List(ctx, p, limit)
+			})
 			if err != nil {
 				return opts.Fail(fmt.Errorf("listing services: %w", err))
 			}
@@ -59,7 +64,7 @@ func newCoreServiceListCommand(opts *globalOptions) *cobra.Command {
 		},
 	}
 
-	resource.RegisterPagingFlags(cmd.Flags(), &page, &limit, "services")
+	resource.RegisterPagingFlags(cmd.Flags(), &page, &limit, &all, "services")
 
 	return cmd
 }
