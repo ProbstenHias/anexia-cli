@@ -20,8 +20,9 @@ all: build
 build:
 	go build -trimpath -ldflags '$(LDFLAGS)' -o bin/$(BINARY) .
 
-install:
-	go install -trimpath -ldflags '$(LDFLAGS)' .
+# go install names the binary after the module, so build and copy instead.
+install: build
+	install -m 0755 bin/$(BINARY) $(or $(GOBIN),$(shell go env GOPATH)/bin)/$(BINARY)
 
 test:
 	go test -race ./...
