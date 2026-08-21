@@ -35,6 +35,32 @@ archives:
 checksum:
   name_template: checksums.txt
 
+homebrew_casks:
+  - name: anexia
+    binaries:
+      - anexia
+    repository:
+      owner: ProbstenHias
+      name: homebrew-tap
+      branch: main
+      # Pushed over SSH with a deploy key scoped to the tap, so no personal
+      # access token with account-wide repo scope is needed.
+      git:
+        url: git@github.com:ProbstenHias/homebrew-tap.git
+        private_key: '{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}'
+    homepage: https://github.com/ProbstenHias/anexia-cli
+    description: Command-line interface for the Anexia Engine API
+    url:
+      verified: github.com/ProbstenHias/anexia-cli/
+    # The binary is neither signed nor notarized, so macOS quarantines it and
+    # reports "anexia is damaged". Strip the quarantine bit on install instead.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/anexia"]
+          end
+
 changelog:
   groups:
     - title: Features
