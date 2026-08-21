@@ -55,13 +55,15 @@ type Column[O any] struct {
 }
 
 // Spec declares a resource: its command name, how it renders, and which verbs
-// it supports. Verbs come with their hook, except list, get and delete which
-// are plain booleans because they need no resource-specific flags.
+// it supports.
+//
+// Only the read verbs exist so far, because every resource the CLI reaches
+// today is read-only in the Engine. create, update and delete belong here too
+// and land with the first resource that needs them, along with the --wait
+// handling their asynchronous cousins require.
 type Spec[O any, PO Pointer[O]] struct {
 	// Noun is the command name, singular and lowercase.
 	Noun string
-	// Aliases are alternative names, typically the plural.
-	Aliases []string
 	// Short is the one-line command description.
 	Short string
 	// Plural names the resource in prose such as "no locations found",
@@ -75,8 +77,6 @@ type Spec[O any, PO Pointer[O]] struct {
 	List bool
 	// Get enables "<noun> get <id>", and requires Identify.
 	Get bool
-	// Delete enables "<noun> delete <id>", and requires Identify.
-	Delete bool
 
 	// Identify writes a positional identifier into an empty object so the
 	// single-object verbs can address it.
@@ -85,17 +85,6 @@ type Spec[O any, PO Pointer[O]] struct {
 	// Filters registers list-only flags and returns a hook applying them to
 	// the filter object.
 	Filters func(*pflag.FlagSet) func(*O)
-
-	// Create registers create flags and returns a hook building the object
-	// to POST. A nil Create disables "<noun> create".
-	Create func(*pflag.FlagSet) func(*O)
-
-	// Update registers update flags and returns a hook mutating the object
-	// read from the Engine. A nil Update disables "<noun> update <id>".
-	Update func(*pflag.FlagSet) func(*O)
-
-	// Awaitable enables --wait on the verbs that change state.
-	Awaitable bool
 }
 
 // identify returns a fresh object addressed by id, or a usage error when the
@@ -124,8 +113,7 @@ func (s Spec[O, PO]) plural() string {
 // can attach further subcommands to the result, which is how sub-nouns such
 // as "resource tag" are wired.
 func Command[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
-	cmd := Group(spec.Noun, spec.Short)
-	cmd.Aliases = spec.Aliases
+	cmd := Noun(spec.Noun, spec.plural(), spec.Short)
 
 	if spec.List {
 		cmd.AddCommand(newListCommand(env, spec))
@@ -133,18 +121,6 @@ func Command[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
 
 	if spec.Get {
 		cmd.AddCommand(newGetCommand(env, spec))
-	}
-
-	if spec.Create != nil {
-		cmd.AddCommand(newCreateCommand(env, spec))
-	}
-
-	if spec.Update != nil {
-		cmd.AddCommand(newUpdateCommand(env, spec))
-	}
-
-	if spec.Delete {
-		cmd.AddCommand(newDeleteCommand(env, spec))
 	}
 
 	return cmd
@@ -163,6 +139,17 @@ func Group(use, short string, children ...*cobra.Command) *cobra.Command {
 	}
 
 	cmd.AddCommand(children...)
+
+	return cmd
+}
+
+// Noun builds the command holding a resource's verbs. It is Group plus the
+// plural alias every noun carries, so "core locations list" reaches the same
+// command as "core location list". Nouns written against the legacy client
+// call this instead of Command to inherit the alias.
+func Noun(noun, plural, short string, children ...*cobra.Command) *cobra.Command {
+	cmd := Group(noun, short, children...)
+	cmd.Aliases = []string{plural}
 
 	return cmd
 }

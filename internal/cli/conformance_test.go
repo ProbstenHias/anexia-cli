@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 // verbs are the only command names allowed at a leaf of the command tree. The
@@ -40,6 +41,22 @@ var verbs = map[string]bool{
 
 	// Cobra's generated shell-completion tree, which the CLI does not own.
 	"completion": true,
+}
+
+// groupNames are the command names that only group children and are not
+// nouns, so the singular rule does not apply to them. Engine API areas are
+// named by Anexia, not by the CLI, and several are not singular words.
+var groupNames = map[string]bool{
+	"core":       true,
+	"config":     true,
+	"network":    true,
+	"vsphere":    true,
+	"kubernetes": true,
+	"lbaas":      true,
+	"dns":        true,
+	"e5e":        true,
+	"frontier":   true,
+	"storage":    true,
 }
 
 // singular flags whether a name reads as a singular noun. Plurals are only
@@ -98,15 +115,75 @@ func TestConformanceLeavesUseKnownVerbs(t *testing.T) {
 	}
 }
 
-func TestConformanceGroupsAndNounsAreSingular(t *testing.T) {
+func TestConformanceNounsAreSingular(t *testing.T) {
 	t.Parallel()
 
 	for _, cmd := range commands(t) {
-		if !cmd.HasSubCommands() {
+		if !cmd.HasSubCommands() || groupNames[cmd.Name()] {
 			continue
 		}
 
-		assert.True(t, singular(cmd.Name()), "%s: group and noun names must be singular, plurals belong in Aliases", path(cmd))
+		assert.True(t, singular(cmd.Name()), "%s: noun names must be singular, plurals belong in Aliases", path(cmd))
+	}
+}
+
+// TestConformanceNounsCarryAPluralAlias checks the other half of the singular
+// rule: a user who reaches for the plural must land on the same command.
+func TestConformanceNounsCarryAPluralAlias(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range commands(t) {
+		if !cmd.HasSubCommands() || groupNames[cmd.Name()] {
+			continue
+		}
+
+		assert.NotEmpty(t, cmd.Aliases, "%s: a noun must accept its plural as an alias", path(cmd))
+	}
+}
+
+// TestConformanceRelationListsOmitPagingFlags is the counterpart to the
+// collection-list check: paging flags that do nothing must not be offered.
+func TestConformanceRelationListsOmitPagingFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range commands(t) {
+		if cmd.Name() != "list" || !takesPositionalArgs(cmd) {
+			continue
+		}
+
+		for _, name := range []string{"page", "limit", "all"} {
+			assert.Nil(t, cmd.Flags().Lookup(name),
+				"%s: a relation list has nothing to page over, so --%s must not exist", path(cmd), name)
+		}
+	}
+}
+
+// TestConformanceErrorMessagesReadAsActionThenCause checks the documented
+// error shape on the failure every command can produce without a server.
+func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
+	isolate(t)
+
+	for _, cmd := range commands(t) {
+		if cmd.HasSubCommands() || !strings.HasPrefix(cmd.CommandPath(), "anexia core ") {
+			continue
+		}
+
+		args := strings.Fields(strings.TrimPrefix(path(cmd), "anexia "))
+
+		// Feed placeholder identifiers so argument validation passes and
+		// the command reaches its authentication failure.
+		for range 2 {
+			args = append(args, "placeholder")
+		}
+
+		_, _, err := runWithInput(t, "y\n", append(args, "--service", "placeholder")...)
+
+		require.Error(t, err, "%s: expected a failure without a token", path(cmd))
+
+		message := errmap.Message(err)
+
+		assert.Equal(t, strings.ToLower(message[:1]), message[:1], "%s: %q must start lowercase", path(cmd), message)
+		assert.False(t, strings.HasSuffix(message, "."), "%s: %q must not end in a period", path(cmd), message)
 	}
 }
 

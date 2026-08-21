@@ -23,13 +23,14 @@ anexia core tag delete <tag-id> --service <service-id> --yes
 ```
 
 Group, noun, verb, in that order, always. The noun is singular so the sentence reads correctly:
-`core location get`, not `core locations get`. Plurals are registered as aliases, so
-`anexia core locations list` works too, but the canonical name in help output is singular.
+`core location get`, not `core locations get`. Every noun registers its plural as an alias, so
+`anexia core locations list` works too, but the canonical name in help output is singular. Use
+`resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
 Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
 and later `network`, `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
-Two commands sit outside this scheme because they never talk to the Engine: `anexia config`
-and `anexia version`.
+The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
+outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 
 A group or noun invoked bare prints its help and exits 0. It never errors and never guesses a
 default verb.
@@ -49,6 +50,10 @@ Every resource uses the same vocabulary. Nothing else is allowed at a leaf.
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the
 Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `create` that
 always fails with "operation not supported" is worse than no `create` at all.
+
+The same rule applies to the registry itself. `internal/resource` currently implements `list` and
+`get`, because every resource the CLI reaches today is read-only. The write verbs are specified
+here and land with the first resource that needs them, rather than sitting unused.
 
 Two extra verbs exist for relations, meaning a collection a resource owns that has no identity of
 its own. A resource's tags are the example:
@@ -88,13 +93,14 @@ nothing to page over.
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
 
-Filter flags on `list` are named after what they filter, in the singular:
-`--tag`, `--location`, `--status`, `--service`. Repeatable filters would be plural, but the
-Engine does not currently accept any.
+Filter flags on `list` are named after the field they filter, in the singular: `--tag`, `--name`,
+`--location`, `--status`, `--service`. Not after the Engine's query parameter, which is why
+`core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
+be plural, but the Engine does not currently accept any.
 
-State-changing verbs on resources that report a provisioning state get `--wait` and
-`--wait-timeout` (default 10m). Resources without a state do not get the flags at all, so
-`--wait` is never accepted only to fail later.
+When write verbs arrive, the ones on resources that report a provisioning state will get `--wait`
+and `--wait-timeout`. Resources without a state must not get the flags at all, so `--wait` is
+never accepted only to fail later.
 
 ## Positional arguments
 
@@ -140,7 +146,7 @@ carries data and nothing else.
 `delete` prompts before acting:
 
 ```
-delete widget "w-1" [y/N]: 
+delete tag "t-1" [y/N]: 
 ```
 
 Only `y` or `yes`, case-insensitively, counts as yes. Everything else, including an empty line
@@ -161,7 +167,12 @@ anexia: listing locations: Engine returned an error: 500 Internal Server Error (
 ```
 
 The prefix comes from the command (`listing locations`, `reading tag "t-1"`), the rest is the
-underlying error, unchanged. Nothing is swallowed and nothing is reworded.
+underlying error. Nothing is swallowed.
+
+One rewrite happens. The legacy client's error stringifies as a Go struct dump,
+`received error from api: {Code:404 Message:... Validation:map[]}`, which is not something to show
+a user. `errmap` replaces that span with `<message> (<status>)` and leaves the command's prefix
+alone. The generic client already reads well and passes through untouched.
 
 Anything the user got wrong about the invocation is prefixed `invalid usage:` instead, which is
 what makes it exit 2:
@@ -192,18 +203,21 @@ Two failures get an extra hint appended, because the Engine's own wording is not
 an auth failure suggests `anexia config view`, and a rate limit suggests retrying later. A
 timeout says what the timeout was and that `--timeout` raises it.
 
+The code must not depend on which go-anxcloud client a command happens to use. The two report
+status differently, the generic one as `api.HTTPError` and the legacy one as a status inside
+`client.ResponseError`, so `errmap` reads both. A 404 is exit 4 either way.
+
 ## How this is enforced
 
-`internal/resource` holds a declarative `Spec` per resource plus the five verb builders. A
-resource is a value, not a command tree:
+`internal/resource` holds a declarative `Spec` per resource plus the verb builders. A resource is
+a value, not a command tree:
 
 ```go
 resource.Command(opts, resource.Spec[corev1.Location, *corev1.Location]{
-    Noun:    "location",
-    Aliases: []string{"locations"},
-    Short:   "Work with Anexia locations",
-    List:    true,
-    Get:     true,
+    Noun:     "location",
+    Short:    "Work with Anexia locations",
+    List:     true,
+    Get:      true,
     Identify: func(l *corev1.Location, id string) { l.Identifier = id },
     Columns: []resource.Column[corev1.Location]{
         {Name: "identifier", Value: func(l *corev1.Location) string { return l.Identifier }},
@@ -212,17 +226,24 @@ resource.Command(opts, resource.Spec[corev1.Location, *corev1.Location]{
 })
 ```
 
-Flag wiring, paging, rendering, confirmation, error wrapping and waiting all live in the verb
-builders, so a new resource cannot get them wrong. Setting `List: true` gets you `--page`,
-`--limit`, `--all`, all four output formats, `--no-headers`, the empty-result note on stderr and
-the `listing <plural>: %w` error prefix, for free and identical to every other resource.
+Flag wiring, paging, rendering and error wrapping live in the verb builders, so a new resource
+cannot get them wrong. Setting `List: true` gets you `--page`, `--limit`, `--all`, all four output
+formats, `--no-headers`, the plural alias, the empty-result note on stderr and the
+`listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag` and `core service` are the current examples). Those
-still follow every rule above, they just do not get them for free. When the generic client gains
-the object, the hand-written command is replaced by a `Spec` and the behavior does not change.
+hand against the legacy client (`core tag` and `core service` are the current examples). They
+follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
+the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `RenderList` for output.
+Reach for those before writing a variant. When the generic client gains the object, the
+hand-written command is replaced by a `Spec` and the behavior does not change.
 
-The conformance test checks the rules that a registry cannot: verb vocabulary, singular nouns,
-help text present and not ending in a period, groups printing help, argument validators present,
-positional arguments documented, paging flags on collection lists, flag naming, and no local flag
-shadowing a global one.
+The conformance test checks the rules that a registry cannot: verb vocabulary, singular nouns
+carrying a plural alias, help text present and not ending in a period, groups printing help,
+argument validators present, positional arguments documented, paging flags present on collection
+lists and absent from relation lists, error messages reading as action then cause, flag naming,
+and no local flag shadowing a global one.
+
+Two rules are checked by targeted tests rather than by walking the tree, because they need a
+server to observe: `--all` requesting every page exactly once from any starting page
+(`internal/resource`), and the exit-code table holding on both clients (`internal/cli`).

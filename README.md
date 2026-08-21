@@ -135,6 +135,20 @@ The token is masked in both `config get token` and `config view`: all but the la
 characters are replaced with `*`. `get` and `view` read the config file only, they do not layer in
 the environment or flags.
 
+## Upgrading from 0.1
+
+`anexia location list` is now `anexia core location list`. The old command is gone and the new one
+is not a rename: it reads the Engine's core location endpoint instead of the vSphere provisioning
+one, so the columns differ and the `--location-code` and `--organization` filters do not exist.
+Filter client-side for now:
+
+```sh
+anexia core location list -o tsv --no-headers | grep ANX04
+```
+
+The vSphere-specific location list, with its human-readable country name and server-side filters,
+returns with the `vsphere` group.
+
 ## Feature coverage
 
 What go-anxcloud can reach, and what `anexia` exposes so far. A dash means the Engine has no such
@@ -227,18 +241,23 @@ operation for that resource, so the CLI will never grow the verb.
 
 | Feature | Status |
 | --- | :-: |
-| Declarative resource registry with the five verbs | [x] |
+| Declarative resource registry, read verbs | [x] |
+| Registry support for `create`, `update`, `delete` | [ ] |
 | `table`, `json`, `yaml`, `tsv` output | [x] |
 | `--no-headers` | [x] |
 | Paging with `--page`, `--limit`, `--all` | [x] |
 | Confirmation prompts and `--yes` | [x] |
-| `--wait` and `--wait-timeout` for stateful resources | [x] |
-| Per-error-class exit codes | [x] |
+| Per-error-class exit codes on both API clients | [x] |
 | Config file, environment and flag layering | [x] |
 | Shell completion | [x] |
 | Conformance test enforcing the design rules | [x] |
+| `--wait` and `--wait-timeout` for stateful resources | [ ] |
 | Tag filters on every taggable resource | [ ] |
 | `--field` column selection | [ ] |
+
+The write verbs are specified in [docs/cli-design.md](docs/cli-design.md) but not implemented:
+every resource reachable today is read-only in the Engine, so there is nothing yet for them to
+act on. `core tag` is the exception and drives the legacy client directly.
 
 ## Development
 

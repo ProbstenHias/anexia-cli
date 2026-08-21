@@ -23,11 +23,10 @@ func newCoreCommand(opts *globalOptions) *cobra.Command {
 // the Engine, so only list and get are wired.
 func newCoreLocationCommand(opts *globalOptions) *cobra.Command {
 	return resource.Command(opts, resource.Spec[corev1.Location, *corev1.Location]{
-		Noun:    "location",
-		Aliases: []string{"locations"},
-		Short:   "Work with Anexia locations",
-		List:    true,
-		Get:     true,
+		Noun:  "location",
+		Short: "Work with Anexia locations",
+		List:  true,
+		Get:   true,
 		Identify: func(l *corev1.Location, id string) {
 			l.Identifier = id
 		},
@@ -46,11 +45,10 @@ func newCoreLocationCommand(opts *globalOptions) *cobra.Command {
 // tags, which get their own sub-noun.
 func newCoreResourceCommand(opts *globalOptions) *cobra.Command {
 	cmd := resource.Command(opts, resource.Spec[corev1.Resource, *corev1.Resource]{
-		Noun:    "resource",
-		Aliases: []string{"resources"},
-		Short:   "Work with Anexia resources",
-		List:    true,
-		Get:     true,
+		Noun:  "resource",
+		Short: "Work with Anexia resources",
+		List:  true,
+		Get:   true,
 		Identify: func(r *corev1.Resource, id string) {
 			r.Identifier = id
 		},

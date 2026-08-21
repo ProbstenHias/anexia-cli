@@ -11,23 +11,52 @@ import (
 // render writes a list result. Structured formats get the raw objects so no
 // field is lost; tabular formats get the spec's column projection.
 func render[O any, PO Pointer[O]](cmd *cobra.Command, w *output.Writer, spec Spec[O, PO], items []O) error {
+	headers := make([]string, len(spec.Columns))
+	for i, c := range spec.Columns {
+		headers[i] = c.Name
+	}
+
+	return RenderList(cmd, w, spec.plural(), items, headers, func(item *O) []string {
+		row := make([]string, len(spec.Columns))
+		for i, c := range spec.Columns {
+			row[i] = c.Value(item)
+		}
+
+		return row
+	})
+}
+
+// RenderList writes a list result in whichever format was requested, with the
+// empty-result note on stderr so piped stdout stays machine-readable. Commands
+// written against the legacy client call this directly, which is what keeps
+// their output indistinguishable from a Spec-driven one.
+func RenderList[T any](
+	cmd *cobra.Command,
+	w *output.Writer,
+	plural string,
+	items []T,
+	headers []string,
+	row func(*T) []string,
+) error {
 	if w.Format().Structured() {
 		if items == nil {
-			items = []O{}
+			items = []T{}
 		}
 
 		return w.Object(items)
 	}
 
-	headers, rows := project(spec, items)
+	rows := make([][]string, 0, len(items))
+	for i := range items {
+		rows = append(rows, row(&items[i]))
+	}
 
 	if err := w.Table(headers, rows); err != nil {
 		return err
 	}
 
-	// The note goes to stderr so piped stdout stays machine-readable.
 	if len(items) == 0 {
-		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "no %s found\n", spec.plural())
+		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "no %s found\n", plural)
 
 		return err
 	}
@@ -41,28 +70,13 @@ func renderOne[O any, PO Pointer[O]](w *output.Writer, spec Spec[O, PO], item *O
 		return w.Object(item)
 	}
 
-	headers, rows := project(spec, []O{*item})
+	headers := make([]string, len(spec.Columns))
+	row := make([]string, len(spec.Columns))
 
-	return w.Table(headers, rows)
-}
-
-// project turns objects into header and row strings using the spec's columns.
-func project[O any, PO Pointer[O]](spec Spec[O, PO], items []O) (headers []string, rows [][]string) {
-	headers = make([]string, len(spec.Columns))
 	for i, c := range spec.Columns {
 		headers[i] = c.Name
+		row[i] = c.Value(item)
 	}
 
-	rows = make([][]string, 0, len(items))
-
-	for i := range items {
-		row := make([]string, len(spec.Columns))
-		for j, c := range spec.Columns {
-			row[j] = c.Value(&items[i])
-		}
-
-		rows = append(rows, row)
-	}
-
-	return headers, rows
+	return w.Table(headers, [][]string{row})
 }

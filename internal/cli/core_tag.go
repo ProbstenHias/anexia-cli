@@ -9,7 +9,6 @@ import (
 
 	"github.com/ProbstenHias/anexia-cli/internal/confirm"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
-	"github.com/ProbstenHias/anexia-cli/internal/output"
 	"github.com/ProbstenHias/anexia-cli/internal/resource"
 )
 
@@ -17,7 +16,7 @@ import (
 // generic pkg/apis tree, so these commands drive the legacy core/tags client
 // directly rather than going through the resource registry.
 func newCoreTagCommand(opts *globalOptions) *cobra.Command {
-	return resource.Group("tag", "Work with Anexia tags",
+	return resource.Noun("tag", "tags", "Work with Anexia tags",
 		newCoreTagListCommand(opts),
 		newCoreTagGetCommand(opts),
 		newCoreTagCreateCommand(opts),
@@ -29,7 +28,7 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 	var (
 		page         int
 		limit        int
-		query        string
+		name         string
 		service      string
 		organization string
 		order        string
@@ -41,12 +40,8 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 		Short: "List tags",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if page < 1 {
-				return errmap.Usagef("--page %d must be 1 or greater", page)
-			}
-
-			if limit < 1 || limit > resource.MaxLimit {
-				return errmap.Usagef("--limit %d must be between 1 and %d", limit, resource.MaxLimit)
+			if err := resource.ValidatePaging(page, limit); err != nil {
+				return err
 			}
 
 			w, err := opts.Writer(cmd.OutOrStdout())
@@ -65,19 +60,23 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 			// The legacy client names its last parameter sortAscending but
 			// sends it as sort_descending, so it is inverted here to make the
 			// flag mean what it says.
-			found, err := tags.NewAPI(c).List(ctx, page, limit, query, service, organization, order, descending)
+			found, err := tags.NewAPI(c).List(ctx, page, limit, name, service, organization, order, descending)
 			if err != nil {
 				return opts.Fail(fmt.Errorf("listing tags: %w", err))
 			}
 
-			return renderTagSummaries(cmd, w, found)
+			return resource.RenderList(cmd, w, "tags", found,
+				[]string{"name", "identifier"},
+				func(s *tags.Summary) []string {
+					return []string{s.Name, s.Identifier}
+				},
+			)
 		},
 	}
 
 	flags := cmd.Flags()
-	flags.IntVar(&page, "page", 1, "page number to fetch")
-	flags.IntVar(&limit, "limit", 50, "maximum number of tags per page")
-	flags.StringVar(&query, "query", "", "filter by tag name")
+	resource.RegisterPagingFlags(flags, &page, &limit, "tags")
+	flags.StringVar(&name, "name", "", "filter by tag name")
 	flags.StringVar(&service, "service", "", "filter by service identifier")
 	flags.StringVar(&organization, "organization", "", "filter by organization identifier")
 	flags.StringVar(&order, "order", "", "field to order by")
@@ -228,39 +227,11 @@ func newCoreTagDeleteCommand(opts *globalOptions) *cobra.Command {
 	return cmd
 }
 
-// renderTagSummaries writes a tag list in the writer's format.
-func renderTagSummaries(cmd *cobra.Command, w *output.Writer, found []tags.Summary) error {
-	if w.Format().Structured() {
-		if found == nil {
-			found = []tags.Summary{}
-		}
-
-		return w.Object(found)
-	}
-
-	rows := make([][]string, 0, len(found))
-	for i := range found {
-		rows = append(rows, []string{found[i].Name, found[i].Identifier})
-	}
-
-	if err := w.Table([]string{"name", "identifier"}, rows); err != nil {
-		return err
-	}
-
-	if len(found) == 0 {
-		_, err := fmt.Fprintln(cmd.ErrOrStderr(), "no tags found")
-
-		return err
-	}
-
-	return nil
-}
-
 // newCoreResourceTagCommand builds "core resource tag", the sub-noun that
 // labels an existing resource. It uses the generic client's tag helpers, which
 // handle the Engine's retry and already-tagged quirks.
 func newCoreResourceTagCommand(opts *globalOptions) *cobra.Command {
-	return resource.Group("tag", "Manage the tags of a resource",
+	return resource.Noun("tag", "tags", "Manage the tags of a resource",
 		newCoreResourceTagListCommand(opts),
 		newCoreResourceTagAddCommand(opts),
 		newCoreResourceTagRemoveCommand(opts),
@@ -291,30 +262,12 @@ func newCoreResourceTagListCommand(opts *globalOptions) *cobra.Command {
 				return opts.Fail(fmt.Errorf("listing tags of resource %q: %w", args[0], err))
 			}
 
-			if w.Format().Structured() {
-				if found == nil {
-					found = []string{}
-				}
-
-				return w.Object(found)
-			}
-
-			rows := make([][]string, 0, len(found))
-			for _, name := range found {
-				rows = append(rows, []string{name})
-			}
-
-			if err := w.Table([]string{"name"}, rows); err != nil {
-				return err
-			}
-
-			if len(rows) == 0 {
-				_, err := fmt.Fprintln(cmd.ErrOrStderr(), "no tags found")
-
-				return err
-			}
-
-			return nil
+			return resource.RenderList(cmd, w, "tags", found,
+				[]string{"name"},
+				func(name *string) []string {
+					return []string{*name}
+				},
+			)
 		},
 	}
 }
