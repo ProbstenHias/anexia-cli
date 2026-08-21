@@ -14,12 +14,32 @@ The project is `anexia-cli`; the installed command is `anexia`.
 
 ## Install
 
+### Homebrew
+
 ```sh
-go install github.com/ProbstenHias/anexia-cli@latest
+brew install --cask ProbstenHias/tap/anexia
 ```
 
-Prebuilt archives for darwin, linux and windows (amd64 and arm64) are attached to each
-[GitHub release](https://github.com/ProbstenHias/anexia-cli/releases).
+The cask lives in [ProbstenHias/homebrew-tap](https://github.com/ProbstenHias/homebrew-tap) and is
+regenerated on every release. The binary is not signed or notarized, so the cask strips the macOS
+quarantine attribute at install time.
+
+### Prebuilt archives
+
+Archives for darwin, linux and windows (amd64 and arm64) are attached to each
+[GitHub release](https://github.com/ProbstenHias/anexia-cli/releases). Unpack one and put `anexia`
+somewhere on your `PATH`.
+
+### From source
+
+```sh
+git clone https://github.com/ProbstenHias/anexia-cli.git
+cd anexia-cli
+make build   # ./bin/anexia
+```
+
+`go install` is deliberately not supported: it names the binary after the module, giving you
+`anexia-cli` instead of `anexia`.
 
 ## Quickstart
 
