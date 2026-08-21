@@ -81,6 +81,12 @@ const maxPages = 1000
 // its first call while still advancing its internal counter, so driving the
 // loop with it skips a page whenever the caller starts past page one. Next is
 // still called, but only to decode the body already in hand.
+//
+// The walk ends on an empty page, or earlier when the Engine reports a total
+// page count. Nothing weaker is safe: the page and limit fields a response
+// carries are all optional, and the library reports a missing field and a
+// literal one as the same zero, so neither the reported page nor the applied
+// page size can tell a last page from a terse response.
 func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page, limit int, all bool) ([]O, error) {
 	items := make([]O, 0, limit)
 
@@ -89,9 +95,6 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 		if err := a.List(ctx, filter, api.Paged(uint(p), uint(limit), &info)); err != nil {
 			return nil, err
 		}
-
-		// Read the reported page before Next, which advances the counter.
-		reported := info.CurrentPage()
 
 		var pageItems []O
 
@@ -103,36 +106,13 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 
 		items = append(items, pageItems...)
 
-		if !all {
-			break
-		}
-
-		// Compare against the page size the Engine applied, not the one
-		// asked for: an endpoint that caps page size below --limit would
-		// otherwise look like a short page and cut the walk short.
-		size := int(info.ItemsPerPage())
-		if size <= 0 {
-			size = limit
-		}
-
-		if len(pageItems) < size {
+		if !all || len(pageItems) == 0 {
 			break
 		}
 
 		// A total page count is advisory, but when the Engine reports one
 		// there is no reason to ask for anything beyond it.
 		if total := info.TotalPages(); total > 0 && uint(p) >= total {
-			break
-		}
-
-		// An endpoint that ignores the page parameter answers every request
-		// with the same page, so the walk would never end. The library
-		// reports page one as zero, hence the normalization.
-		if reported == 0 {
-			reported = 1
-		}
-
-		if reported != uint(p) {
 			break
 		}
 
@@ -188,9 +168,11 @@ func RegisterPagingFlags(flags *pflag.FlagSet, page, limit *int, all *bool, plur
 }
 
 // FetchPages walks pages by calling get once per page, for commands written
-// against the legacy client. Those clients return a bare slice with no page
-// metadata, so a page shorter than the limit is the only end-of-results signal
-// available; maxPages backstops an Engine that never produces one.
+// against the legacy client. Those clients discard every byte of page metadata
+// before returning, so an empty page is the only end-of-results signal there
+// is; maxPages backstops an Engine that never produces one. Stopping on a page
+// merely shorter than the limit would truncate the walk against an Engine that
+// caps page size below --limit, which the default limit of 50 makes likely.
 func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error)) ([]T, error) {
 	items := make([]T, 0, limit)
 
@@ -202,7 +184,7 @@ func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error
 
 		items = append(items, pageItems...)
 
-		if !all || len(pageItems) < limit {
+		if !all || len(pageItems) == 0 {
 			return items, nil
 		}
 

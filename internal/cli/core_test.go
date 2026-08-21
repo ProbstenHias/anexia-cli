@@ -310,11 +310,18 @@ func TestCoreServiceListAllWalksPages(t *testing.T) {
 
 		seen = append(seen, page)
 
-		// Two services per page until page three, which is short and ends
-		// the walk.
-		names := []string{"a", "b"}
-		if page >= 3 {
-			names = names[:1]
+		// Two services per page, one on the short third page, none after.
+		// The empty fourth page is what ends the walk: a short page is not
+		// proof of the end, because the Engine may cap its page size below
+		// the requested limit.
+		var names []string
+
+		switch {
+		case page > 3:
+		case page == 3:
+			names = []string{"a"}
+		default:
+			names = []string{"a", "b"}
 		}
 
 		services := make([]map[string]string, 0, len(names))
@@ -337,7 +344,7 @@ func TestCoreServiceListAllWalksPages(t *testing.T) {
 		"--token", "tok", "--api-base-url", srv.URL)
 
 	require.NoError(t, err)
-	require.Equal(t, []int{1, 2, 3}, seen)
+	require.Equal(t, []int{1, 2, 3, 4}, seen)
 
 	for _, want := range []string{"s-1-a", "s-1-b", "s-2-a", "s-2-b", "s-3-a"} {
 		require.Contains(t, stdout, want)

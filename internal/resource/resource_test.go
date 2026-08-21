@@ -164,6 +164,48 @@ func onePage(t *testing.T, objects ...corev1.Location) string {
 	return paged(t, 1, 1, 50, objects...)
 }
 
+// terse wraps objects in an envelope carrying no paging metadata at all. Every
+// field of it is optional in the Engine's responses, and the client reports a
+// missing field and a literal zero identically, so this shape is the one that
+// catches a walk relying on either.
+func terse(t *testing.T, objects ...corev1.Location) string {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{"data": objects})
+	require.NoError(t, err)
+
+	return string(body)
+}
+
+// bare renders objects as a plain JSON array, the third shape the client
+// decodes.
+func bare(t *testing.T, objects ...corev1.Location) string {
+	t.Helper()
+
+	body, err := json.Marshal(objects)
+	require.NoError(t, err)
+
+	return string(body)
+}
+
+// identifiers reads the identifiers out of JSON command output, in order, so a
+// walk can be asserted against exactly rather than by substring.
+func identifiers(t *testing.T, stdout string) []string {
+	t.Helper()
+
+	var got []struct {
+		Identifier string `json:"identifier"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+
+	ids := make([]string, 0, len(got))
+	for _, g := range got {
+		ids = append(ids, g.Identifier)
+	}
+
+	return ids
+}
+
 func TestCommandRegistersReadVerbs(t *testing.T) {
 	t.Parallel()
 
@@ -308,53 +350,115 @@ func TestListAllWalksEveryPage(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantPages, seen)
-
-			var got []struct {
-				Identifier string `json:"identifier"`
-			}
-			require.NoError(t, json.Unmarshal([]byte(stdout), &got))
-
-			ids := make([]string, 0, len(got))
-			for _, g := range got {
-				ids = append(ids, g.Identifier)
-			}
-
-			assert.Equal(t, tt.wantIDs, ids)
+			assert.Equal(t, tt.wantIDs, identifiers(t, stdout))
 		})
 	}
 }
 
-// TestListAllStopsOnShortPage covers an Engine that reports no total: the walk
-// has to end when a page comes back smaller than the requested limit.
-func TestListAllStopsOnShortPage(t *testing.T) {
+// TestListAllStopsOnAnEmptyPage covers an Engine that reports no total. An
+// empty page is the only signal that says "no more results" without relying on
+// an optional field, so it has to be the one the walk trusts.
+func TestListAllStopsOnAnEmptyPage(t *testing.T) {
 	t.Parallel()
 
 	e, seen := serve(t,
 		paged(t, 1, 0, 2, corev1.Location{Identifier: "id-1"}, corev1.Location{Identifier: "id-2"}),
 		paged(t, 2, 0, 2, corev1.Location{Identifier: "id-3"}),
+		paged(t, 3, 0, 2),
 	)
 
 	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "2")
 
 	require.NoError(t, err)
-	assert.Len(t, *seen, 2)
+	assert.Len(t, *seen, 3)
 	assert.Contains(t, stdout, "id-3")
 }
 
-// TestListAllStopsWhenPagingIsIgnored guards against the endpoint that answers
-// every request with the same full page and reports no total. Nothing about the
-// response says "last page", so the walk has to notice the page number it got
-// back is not the one it asked for. Without that the walk runs until --timeout.
-func TestListAllStopsWhenPagingIsIgnored(t *testing.T) {
+// TestListAllWalksEveryResponseShape drives --all over every envelope the
+// client can decode, including the ones that carry no page number and no
+// applied page size. Both of those arrive as a zero indistinguishable from a
+// literal one, so a walk that reads either field truncates here.
+func TestListAllWalksEveryResponseShape(t *testing.T) {
 	t.Parallel()
 
-	e, seen := serve(t, paged(t, 1, 0, 1, corev1.Location{Identifier: "id-1"}))
+	const lastPage = 4
 
-	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+	tests := []struct {
+		name string
+		body func(t *testing.T, page int, objects ...corev1.Location) string
+	}{
+		{
+			name: "full metadata",
+			body: func(t *testing.T, page int, objects ...corev1.Location) string {
+				t.Helper()
 
-	require.NoError(t, err)
-	assert.Len(t, *seen, 2, "one request for the asked-for page, one to notice paging is ignored")
-	assert.Contains(t, stdout, "id-1")
+				return paged(t, page, 0, 1, objects...)
+			},
+		},
+		{
+			name: "no page or limit reported",
+			body: func(t *testing.T, _ int, objects ...corev1.Location) string {
+				t.Helper()
+
+				return terse(t, objects...)
+			},
+		},
+		{
+			name: "bare array",
+			body: func(t *testing.T, _ int, objects ...corev1.Location) string {
+				t.Helper()
+
+				return bare(t, objects...)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, start := range []int{1, 2} {
+				var seen []int
+
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					page, err := strconv.Atoi(r.URL.Query().Get("page"))
+					require.NoError(t, err)
+
+					seen = append(seen, page)
+
+					objects := []corev1.Location{{Identifier: fmt.Sprintf("id-p%d", page)}}
+					if page > lastPage {
+						objects = nil
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(tt.body(t, page, objects...)))
+				}))
+
+				e := &env{baseURL: srv.URL, format: output.FormatJSON}
+
+				stdout, _, err := exec(resource.Command(e, locationSpec()),
+					"list", "--all", "--limit", "1", "--page", fmt.Sprint(start))
+				srv.Close()
+
+				require.NoError(t, err)
+
+				wantPages := make([]int, 0, lastPage)
+				wantIDs := make([]string, 0, lastPage)
+
+				for p := start; p <= lastPage; p++ {
+					wantPages = append(wantPages, p)
+					wantIDs = append(wantIDs, fmt.Sprintf("id-p%d", p))
+				}
+
+				// One extra request to see the empty page that ends the walk.
+				wantPages = append(wantPages, lastPage+1)
+
+				assert.Equal(t, wantPages, seen, "requested pages starting at %d", start)
+				assert.Equal(t, wantIDs, identifiers(t, stdout), "returned objects starting at %d", start)
+			}
+		})
+	}
 }
 
 // TestListAllWalksPagesCappedBelowTheLimit covers an Engine that caps its page
@@ -373,12 +477,13 @@ func TestListAllWalksPagesCappedBelowTheLimit(t *testing.T) {
 
 		seen = append(seen, page)
 
-		objects := []corev1.Location{
-			{Identifier: fmt.Sprintf("id-p%d-a", page)},
-			{Identifier: fmt.Sprintf("id-p%d-b", page)},
-		}
-		if page >= 3 {
-			objects = objects[:1]
+		var objects []corev1.Location
+
+		if page <= 3 {
+			objects = []corev1.Location{
+				{Identifier: fmt.Sprintf("id-p%d-a", page)},
+				{Identifier: fmt.Sprintf("id-p%d-b", page)},
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -386,16 +491,17 @@ func TestListAllWalksPagesCappedBelowTheLimit(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	e := &env{baseURL: srv.URL, format: output.FormatTable}
+	e := &env{baseURL: srv.URL, format: output.FormatJSON}
 
 	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "10")
 
 	require.NoError(t, err)
-	assert.Equal(t, []int{1, 2, 3}, seen)
-
-	for _, want := range []string{"id-p1-a", "id-p1-b", "id-p2-a", "id-p2-b", "id-p3-a"} {
-		assert.Contains(t, stdout, want)
-	}
+	assert.Equal(t, []int{1, 2, 3, 4}, seen)
+	assert.Equal(t, []string{
+		"id-p1-a", "id-p1-b",
+		"id-p2-a", "id-p2-b",
+		"id-p3-a", "id-p3-b",
+	}, identifiers(t, stdout))
 }
 
 // TestListAllGivesUpOnAnEndlessEngine is the backstop: an Engine that keeps
@@ -586,10 +692,11 @@ func TestListStructuredOutputEmpty(t *testing.T) {
 	assert.JSONEq(t, `[]`, stdout)
 }
 
-// TestFetchPagesWalksUntilAShortPage covers the paging helper the legacy
-// commands share. Those clients report no page metadata, so a page shorter
-// than the limit is the only end-of-results signal.
-func TestFetchPagesWalksUntilAShortPage(t *testing.T) {
+// TestFetchPagesWalksUntilAnEmptyPage covers the paging helper the legacy
+// commands share. Those clients discard all page metadata, so an empty page is
+// the only end-of-results signal. Page three is short but not empty, which the
+// walk must not read as the end.
+func TestFetchPagesWalksUntilAnEmptyPage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -610,14 +717,14 @@ func TestFetchPagesWalksUntilAShortPage(t *testing.T) {
 			name:      "every page from the first",
 			startPage: 1,
 			all:       true,
-			wantPages: []int{1, 2, 3},
+			wantPages: []int{1, 2, 3, 4},
 			wantItems: []string{"p1-a", "p1-b", "p2-a", "p2-b", "p3-a"},
 		},
 		{
 			name:      "every page from a later one",
 			startPage: 2,
 			all:       true,
-			wantPages: []int{2, 3},
+			wantPages: []int{2, 3, 4},
 			wantItems: []string{"p2-a", "p2-b", "p3-a"},
 		},
 	}
@@ -628,15 +735,18 @@ func TestFetchPagesWalksUntilAShortPage(t *testing.T) {
 
 			var seen []int
 
-			// Two items per page until page three, which is short.
+			// Two items per page, one on the short third page, none after.
 			items, err := resource.FetchPages(tt.startPage, 2, tt.all, func(p int) ([]string, error) {
 				seen = append(seen, p)
 
-				if p >= 3 {
+				switch {
+				case p > 3:
+					return nil, nil
+				case p == 3:
 					return []string{fmt.Sprintf("p%d-a", p)}, nil
+				default:
+					return []string{fmt.Sprintf("p%d-a", p), fmt.Sprintf("p%d-b", p)}, nil
 				}
-
-				return []string{fmt.Sprintf("p%d-a", p), fmt.Sprintf("p%d-b", p)}, nil
 			})
 
 			require.NoError(t, err)
@@ -644,6 +754,30 @@ func TestFetchPagesWalksUntilAShortPage(t *testing.T) {
 			assert.Equal(t, tt.wantItems, items)
 		})
 	}
+}
+
+// TestFetchPagesWalksPagesCappedBelowTheLimit is the legacy half of the
+// capped-page-size case: stopping on a page merely shorter than --limit would
+// truncate here, and --limit defaults to 50 so an Engine capping lower than
+// that is the likely case rather than the exotic one.
+func TestFetchPagesWalksPagesCappedBelowTheLimit(t *testing.T) {
+	t.Parallel()
+
+	var seen []int
+
+	items, err := resource.FetchPages(1, 50, true, func(p int) ([]string, error) {
+		seen = append(seen, p)
+
+		if p > 3 {
+			return nil, nil
+		}
+
+		return []string{fmt.Sprintf("p%d-a", p), fmt.Sprintf("p%d-b", p)}, nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3, 4}, seen)
+	assert.Equal(t, []string{"p1-a", "p1-b", "p2-a", "p2-b", "p3-a", "p3-b"}, items)
 }
 
 func TestFetchPagesReportsFailure(t *testing.T) {

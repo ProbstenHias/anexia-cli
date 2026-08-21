@@ -90,12 +90,18 @@ Every `list` over a collection accepts the same paging flags: `--page` (default 
 `resource tag list` do not, because the items come back inside the parent object and there is
 nothing to page over.
 
-`--all` stops when a page comes back shorter than the page size the Engine actually applied, when
-the Engine reports it has run out of pages, or when the Engine hands back a page number other
-than the one asked for, which is what an endpoint that ignores paging does. Failing all of those
-it gives up after a thousand pages rather than looping until `--timeout`. Comparing against the
-requested `--limit` instead of the applied page size would silently truncate the walk against an
-Engine that caps page size, so it must not be used for this.
+`--all` stops on an empty page, or earlier when the Engine reports it has run out of pages.
+Failing both it gives up after a thousand pages rather than looping until `--timeout`.
+
+Nothing weaker than an empty page is safe, and the reason is worth writing down because two
+earlier attempts got it wrong. Every paging field in an Engine response is optional, and
+go-anxcloud reports a missing field and a literal zero as the same value, so neither the page
+number nor the applied page size can distinguish a last page from a terse response. Stopping on a
+page merely shorter than `--limit` truncates against an Engine that caps its page size below the
+requested limit, which the default limit of 50 makes likely rather than exotic. Stopping when the
+reported page number does not match the requested one truncates against any endpoint that omits
+the field. Both failures are silent and exit 0, which is worse than the runaway they were meant
+to prevent. The cost of the empty-page rule is one extra request per walk.
 
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
@@ -251,8 +257,14 @@ the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchP
 the object, the hand-written command is replaced by a `Spec` and the behavior does not change.
 
 Every divergence between the two halves that users could observe has been a bug so far: a missing
-plural alias, an exit code that depended on the client, a `--all` flag present on one half only.
-Sharing a helper is how that stops happening.
+plural alias, an exit code that depended on the client, a `--all` flag present on one half only,
+and a `--all` walk that truncated on one half only. Sharing a helper is how that stops happening.
+
+Paging is the one place where the two halves cannot share an implementation. The legacy clients
+discard every byte of page metadata before returning, so `FetchPages` has only the page contents
+to work from where the registry also has a reported total. They still agree on everything
+observable: both walk from an arbitrary start page, both stop on an empty page, both give up after
+a thousand pages with the same message.
 
 The conformance test checks the rules that a registry cannot: verb vocabulary, singular nouns
 carrying a plural alias, help text present and not ending in a period, groups printing help,
