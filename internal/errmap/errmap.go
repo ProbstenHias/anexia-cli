@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"go.anx.io/go-anxcloud/pkg/api"
@@ -140,20 +141,69 @@ func Message(err error) string {
 	}
 }
 
-// readable replaces the legacy client's struct dump with the message and
-// status the Engine actually sent, keeping the calling command's prefix.
+// readable replaces the legacy client's struct dumps with the message and
+// status the Engine actually sent, keeping the calling command's prefix. Every
+// dump in the chain is replaced: errors.As only finds the outermost, so a
+// failure reported through more than one Engine call would otherwise still
+// show Go struct formatting mid-sentence.
 func readable(err error) string {
+	text := err.Error()
+
+	for _, responseErr := range responseErrors(err) {
+		text = strings.Replace(text, responseErr.Error(), engineMessage(responseErr), 1)
+	}
+
+	return text
+}
+
+// responseErrors collects every legacy Engine error in the chain, outermost
+// first. Joined errors branch, so the whole tree is walked rather than the
+// single Unwrap chain errors.As follows.
+func responseErrors(err error) []*client.ResponseError {
+	var found []*client.ResponseError
+
+	switch e := err.(type) { //nolint:errorlint // walking the tree needs the concrete shapes
+	case interface{ Unwrap() []error }:
+		for _, wrapped := range e.Unwrap() {
+			found = append(found, responseErrors(wrapped)...)
+		}
+	case interface{ Unwrap() error }:
+		found = responseErrors(e.Unwrap())
+	}
+
 	var responseErr *client.ResponseError
-	if !errors.As(err, &responseErr) {
-		return err.Error()
+	if e, ok := err.(*client.ResponseError); ok { //nolint:errorlint // this frame only, children are handled above
+		responseErr = e
 	}
 
-	status := legacyStatus(responseErr)
-
-	replacement := fmt.Sprintf("%s (%d)", responseErr.ErrorData.Message, status)
-	if responseErr.ErrorData.Message == "" {
-		replacement = fmt.Sprintf("the Engine returned status %d", status)
+	if responseErr != nil {
+		found = append([]*client.ResponseError{responseErr}, found...)
 	}
 
-	return strings.Replace(err.Error(), responseErr.Error(), replacement, 1)
+	return found
+}
+
+// engineMessage renders one legacy Engine error as the Engine's own wording
+// plus its status, keeping any field-level validation detail: when the Engine
+// rejects a field, naming it is the only actionable part of the message.
+func engineMessage(err *client.ResponseError) string {
+	status := legacyStatus(err)
+
+	text := fmt.Sprintf("%s (%d)", err.ErrorData.Message, status)
+	if err.ErrorData.Message == "" {
+		text = fmt.Sprintf("the Engine returned status %d", status)
+	}
+
+	if len(err.ErrorData.Validation) == 0 {
+		return text
+	}
+
+	fields := make([]string, 0, len(err.ErrorData.Validation))
+	for field, reason := range err.ErrorData.Validation {
+		fields = append(fields, fmt.Sprintf("%s: %s", field, reason))
+	}
+
+	sort.Strings(fields)
+
+	return fmt.Sprintf("%s (%s)", text, strings.Join(fields, ", "))
 }

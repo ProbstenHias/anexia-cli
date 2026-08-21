@@ -151,15 +151,19 @@ returns with the `vsphere` group.
 
 ## Feature coverage
 
-What go-anxcloud can reach, and what `anexia` exposes so far. A dash means the Engine has no such
-operation for that resource, so the CLI will never grow the verb.
+`[x]` ships, `[ ]` is planned, and `-` means the operation does not exist in the Engine, so the
+CLI will never grow the verb. A `~` marks an operation the Engine may well have but go-anxcloud
+does not implement yet, which the CLI cannot reach until the library does.
+
+Only the `core` group below is implemented. Everything after it is a roadmap of what the library
+can reach, checked against go-anxcloud v0.14.5 but not against the Engine itself.
 
 ### core
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `core location` | [x] | [x] | - | - | - | |
-| `core resource` | [x] | [x] | - | - | - | `tag list`/`add`/`remove` [x] |
+| `core resource` | [x] | [x] | - | ~ | ~ | `tag list`/`add`/`remove` [x] |
 | `core tag` | [x] | [x] | [x] | - | [x] | |
 | `core service` | [x] | - | - | - | - | |
 
@@ -197,8 +201,8 @@ operation for that resource, so the CLI will never grow the verb.
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `kubernetes cluster` | [ ] | [ ] | [ ] | [ ] | [ ] | `kubeconfig get`/`delete` [ ] |
 | `kubernetes node-pool` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `kubernetes disk` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `kubernetes network` | [ ] | [ ] | [ ] | [ ] | [ ] | |
+| `kubernetes disk` | [ ] | [ ] | [ ] | [ ] | [ ] | legacy client only |
+| `kubernetes network` | [ ] | [ ] | [ ] | [ ] | [ ] | legacy client only |
 
 ### lbaas
 
@@ -214,6 +218,9 @@ operation for that resource, so the CLI will never grow the verb.
 | `lbaas cluster` | [ ] | [ ] | [ ] | [ ] | [ ] |
 | `lbaas node` | [ ] | [ ] | [ ] | [ ] | [ ] |
 
+The first seven come from the LBaaS v1 API, `cluster` and `node` from v2. How they are grouped in
+the CLI is not settled yet.
+
 ### e5e and frontier
 
 | Resource | list | get | create | update | delete | extra |
@@ -223,7 +230,7 @@ operation for that resource, so the CLI will never grow the verb.
 | `frontier api` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `frontier endpoint` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `frontier action` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `frontier deployment` | [ ] | [ ] | [ ] | - | [ ] | |
+| `frontier deployment` | [ ] | [ ] | [ ] | ~ | [ ] | create is a deploy action |
 
 ### storage
 
@@ -236,6 +243,10 @@ operation for that resource, so the CLI will never grow the verb.
 | `storage region` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage endpoint` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage backend` | [ ] | [ ] | [ ] | [ ] | [ ] | |
+
+The object storage API is marked beta in go-anxcloud. The write verbs on `region`, `endpoint` and
+`backend` are unconfirmed: the library defines no write handling for them, which may mean they are
+read-only.
 
 ### Cross-cutting
 

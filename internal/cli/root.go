@@ -107,6 +107,23 @@ func (g *globalOptions) Context(parent context.Context) (context.Context, contex
 	return context.WithTimeout(parent, g.timeout)
 }
 
+// validate rejects global flag values that cannot lead anywhere. Commands call
+// it before contacting the Engine.
+func (g *globalOptions) validate() error {
+	if g.timeout <= 0 {
+		return errmap.Usagef("--timeout %s must be greater than zero", g.timeout)
+	}
+
+	// Checked here rather than only where a writer gets built, so a command
+	// that prints no object still rejects a format it cannot honor instead
+	// of appearing to accept one.
+	if _, err := output.ParseFormat(g.outputFormat); err != nil {
+		return errmap.Usage(err)
+	}
+
+	return nil
+}
+
 // AssumeYes reports whether --yes was passed.
 func (g *globalOptions) AssumeYes() bool {
 	return g.assumeYes
@@ -133,6 +150,11 @@ func NewRootCommand(d Deps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
+		// Only root defines this, so cobra runs it for every command in the
+		// tree and global flag values are checked exactly once.
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return opts.validate()
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -162,11 +184,30 @@ func NewRootCommand(d Deps) *cobra.Command {
 		newCoreCommand(opts),
 		newConfigCommand(opts),
 		newVersionCommand(),
+		newMovedCommand("location", "anexia core location list"),
 	)
 
 	markUsageErrors(root)
 
 	return root
+}
+
+// newMovedCommand points a command that used to exist at its replacement.
+// Cobra's suggestions cannot help here, because the old name is not a near
+// miss of any current one, so without this the user only sees "unknown
+// command" and has to find the migration note in the README.
+//
+// It is hidden, so it does not appear in help or completion as if it worked.
+func newMovedCommand(name, replacement string) *cobra.Command {
+	return &cobra.Command{
+		Use:                name,
+		Short:              "Moved to " + replacement,
+		Hidden:             true,
+		DisableFlagParsing: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errmap.Usagef("%q has moved, use %q instead", name, replacement)
+		},
+	}
 }
 
 // markUsageErrors makes every argument validator in the tree report a usage

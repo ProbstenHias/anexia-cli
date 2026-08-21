@@ -90,18 +90,28 @@ Every `list` over a collection accepts the same paging flags: `--page` (default 
 `resource tag list` do not, because the items come back inside the parent object and there is
 nothing to page over.
 
-`--all` stops on an empty page, or earlier when the Engine reports it has run out of pages.
-Failing both it gives up after a thousand pages rather than looping until `--timeout`.
+`--all` stops on an empty page and nothing else. Failing that it gives up after a thousand pages
+rather than looping until `--timeout`, and says how to narrow the results.
 
-Nothing weaker than an empty page is safe, and the reason is worth writing down because two
+Nothing weaker than an empty page is safe, and the reason is worth writing down because three
 earlier attempts got it wrong. Every paging field in an Engine response is optional, and
-go-anxcloud reports a missing field and a literal zero as the same value, so neither the page
-number nor the applied page size can distinguish a last page from a terse response. Stopping on a
-page merely shorter than `--limit` truncates against an Engine that caps its page size below the
-requested limit, which the default limit of 50 makes likely rather than exotic. Stopping when the
-reported page number does not match the requested one truncates against any endpoint that omits
-the field. Both failures are silent and exit 0, which is worse than the runaway they were meant
-to prevent. The cost of the empty-page rule is one extra request per walk.
+go-anxcloud reports a missing field and a literal zero as the same value. So the reported page
+number, the applied page size, and the total page count are each untrustworthy on their own:
+
+- Stopping on a page shorter than `--limit` truncates against an Engine that caps its page size
+  below the requested limit, which the default limit of 50 makes likely rather than exotic.
+- Stopping when the reported page number does not match the requested one truncates against any
+  endpoint that omits the field.
+- Stopping at the reported total truncates when that total is computed from the requested limit
+  while the Engine caps lower.
+
+Every one of those failures is silent and exits 0, which is worse than the runaway they were
+meant to prevent. The cost of the empty-page rule is one extra request per walk.
+
+Two consequences follow. An Engine that answers the page after the last one with a 404 instead of
+an empty list ends the walk rather than losing it, because that extra request now happens on every
+complete walk. And a resource go-anxcloud marks as not paginating is fetched exactly once, with
+`--page` beyond the first rejected as a usage mistake instead of silently returning page one.
 
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
@@ -110,6 +120,10 @@ Filter flags on `list` are named after the field they filter, in the singular: `
 `--location`, `--status`, `--service`. Not after the Engine's query parameter, which is why
 `core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
 be plural, but the Engine does not currently accept any.
+
+Sort controls are not filters and are named for what they do: `--order` takes the field to sort
+by, `--descending` reverses it. Only `core tag list` has them, because it is the only endpoint
+that accepts sorting.
 
 When write verbs arrive, the ones on resources that report a provisioning state will get `--wait`
 and `--wait-timeout`. Resources without a state must not get the flags at all, so `--wait` is
@@ -151,8 +165,10 @@ An empty `list` prints the header row to stdout and `no <plural> found` to **std
 pipeline that reads stdout sees a clean empty result. In `json` the same case is `[]`, never
 `null`.
 
-Progress notes, confirmations, and messages like `deleted tag t-1` also go to stderr. Stdout
-carries data and nothing else.
+Progress notes, confirmations, and messages like `deleted tag t-1` also go to stderr. For any
+command that talks to the Engine, stdout carries data and nothing else. The `config` commands sit
+outside that rule: their output is the thing you asked for, so `config path` prints to stdout on
+purpose.
 
 ## Confirmation
 
@@ -162,11 +178,13 @@ carries data and nothing else.
 delete tag "t-1" [y/N]: 
 ```
 
-Only `y` or `yes`, case-insensitively, counts as yes. Everything else, including an empty line
-and a closed stdin, is a no and exits with code 7.
+Only `y` or `yes`, case-insensitively, counts as yes. Everything else, including an empty line, is
+a no and exits with code 7.
 
-`--yes` skips the prompt. When stdin is not available and `--yes` was not passed, the command
-fails with a message telling you to pass `--yes` rather than hanging or silently proceeding.
+`--yes` skips the prompt. There is a difference between a refusal and nobody being there to ask:
+an answer that is not yes is a refusal, while stdin ending without any answer at all means the
+command is running unattended. Both exit 7, but the unattended case says to pass `--yes`, because
+a bare "canceled" on a CI runner explains nothing.
 
 Relation removal (`resource tag remove`) does not prompt, because reattaching a tag is trivial
 and prompting on every tag change would be noise.
@@ -222,6 +240,16 @@ so `errmap` reads both. A 404 is exit 4 either way. For the legacy shape the sta
 HTTP response, not the `code` field in the decoded body: the Engine does not always repeat its
 status there, and reading the body alone turns those failures into exit 1.
 
+That shape only exists when the library can parse the response body. It builds the error by
+decoding the body first and discards the response when that fails, so a bodyless 404 or an HTML
+403 from a proxy would arrive with no status at all and land on exit 1 with a message about JSON
+syntax. `internal/anx` wraps the legacy client's transport to substitute a minimal JSON body in
+that case, which keeps classification a property of the status rather than of the Engine's
+wording.
+
+Engine validation detail survives into the message. A 422 that names the offending fields renders
+them, because "validation failed" alone does not tell the user what to change.
+
 The hint and the exit code are decided by the same classification, so a message can never
 disagree with the code the process exits with.
 
@@ -262,22 +290,33 @@ and a `--all` walk that truncated on one half only. Sharing a helper is how that
 
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents
-to work from where the registry also has a reported total. They still agree on everything
-observable: both walk from an arbitrary start page, both stop on an empty page, both give up after
-a thousand pages with the same message.
+to work from. They still agree on everything observable: both walk from an arbitrary start page,
+both stop on an empty page, both give up after a thousand pages with the same message.
 
-The conformance test checks the rules that a registry cannot: verb vocabulary, singular nouns
-carrying a plural alias, help text present and not ending in a period, groups printing help,
+Anything that must hold for every command belongs in one place rather than in each command.
+`--timeout` and `-o` are validated in the root's `PersistentPreRunE`, which is why `-o xml` is
+rejected even by a command that renders no object and so never builds a writer. Per-command
+validation would have to be remembered 12 times and was in fact forgotten 3 times.
+
+The conformance test checks the rules that a registry cannot: verb vocabulary for both command
+names and aliases, singular nouns carrying a plural alias that resolves back to the same command,
+help text present and not ending in a period, groups printing help and rejecting arguments,
 argument validators present, positional arguments documented, paging flags present on collection
-lists and absent from relation lists, error messages reading as action then cause, flag naming,
-and no local flag shadowing a global one.
+lists and absent from relation lists, every output format accepted and a bad one rejected on every
+Engine command, error messages reading as action then cause, flag naming, and no local flag
+shadowing a global one.
 
-The error-shape check drives each command with arguments derived from its own `Args` validator and
-flag set, and fails if a command never got past parsing. A conformance test that only ever
-observes `invalid usage:` proves nothing, which is exactly how it was wrong once.
+Two things make the difference between a conformance test and a test that passes for the wrong
+reason. It has to reach the behavior: the error-shape and output-format checks drive each command
+with arguments derived from its own `Args` validator and flag set, and fail if a command never got
+past parsing, because a test that only ever observes `invalid usage:` proves nothing. And it has to
+check the value, not just its presence: asserting a noun has some alias passes on the wrong alias,
+so the alias is resolved through the tree instead. Both of those were live defects here, and every
+check in the file has been confirmed to fail against a deliberate violation.
 
 Two rules are checked by targeted tests rather than by walking the tree, because they need a
 server to observe: `--all` requesting every page exactly once from any starting page, and
-terminating against an Engine that caps page size, ignores paging, or never stops
-(`internal/resource`); and the exit-code table holding on both clients whether or not the Engine
-repeats its status in the response body (`internal/cli`).
+terminating against an Engine that caps page size, omits paging metadata, reports a wrong total,
+rejects the page after the last, or never stops (`internal/resource`); and the exit-code table
+holding on both clients whether or not the Engine repeats its status in the response body, or
+sends a body at all (`internal/cli`).

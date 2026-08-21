@@ -198,6 +198,45 @@ func TestMessageRewritesLegacyErrorDump(t *testing.T) {
 	assert.Equal(t, `reading tag "t-1": tag not found (404)`, errmap.Message(err))
 }
 
+// TestMessageKeepsFieldValidationDetail covers the user who mistyped one field
+// of a create. The Engine says which field it rejected and why, and that detail
+// is the only actionable part of the message, so rendering the error must not
+// discard it.
+func TestMessageKeepsFieldValidationDetail(t *testing.T) {
+	t.Parallel()
+
+	engineErr := responseError(http.StatusUnprocessableEntity, "validation failed")
+
+	var responseErr *client.ResponseError
+	require.ErrorAs(t, engineErr, &responseErr)
+
+	responseErr.ErrorData.Validation = map[string]string{
+		"service_identifier": "does not exist",
+		"name":               "must not be empty",
+	}
+
+	message := errmap.Message(fmt.Errorf("creating tag: %w", engineErr))
+
+	assert.Contains(t, message, "name: must not be empty")
+	assert.Contains(t, message, "service_identifier: does not exist")
+}
+
+// TestMessageRewritesEveryLegacyErrorInTheChain covers a failure reported
+// through more than one Engine call. Every struct dump has to be replaced, not
+// just the outermost, or the user sees raw Go formatting mid-sentence.
+func TestMessageRewritesEveryLegacyErrorInTheChain(t *testing.T) {
+	t.Parallel()
+
+	inner := fmt.Errorf("reading tag: %w", responseError(http.StatusNotFound, "tag not found"))
+	outer := fmt.Errorf("listing tags: %w: %w", responseError(http.StatusTooManyRequests, "slow down"), inner)
+
+	message := errmap.Message(outer)
+
+	assert.NotContains(t, message, "received error from api")
+	assert.Contains(t, message, "slow down (429)")
+	assert.Contains(t, message, "tag not found (404)")
+}
+
 func TestMessageRewritesLegacyErrorWithoutMessage(t *testing.T) {
 	t.Parallel()
 

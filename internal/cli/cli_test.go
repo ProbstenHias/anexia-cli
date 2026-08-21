@@ -59,6 +59,10 @@ func runWithInput(t *testing.T, input string, args ...string) (stdoutText, stder
 }
 
 // server serves a canned JSON body on any path and records the last request.
+//
+// Only the last request survives, so this is for single-request commands. A
+// test that needs to assert on several requests must use its own handler
+// appending to a slice, or it will pass while later requests go unchecked.
 func server(t *testing.T, status int, body string) (srv *httptest.Server, last *request) {
 	t.Helper()
 
@@ -119,12 +123,16 @@ func TestVersionCommand(t *testing.T) {
 	require.Contains(t, stdout, "anexia dev")
 }
 
+// TestRootRejectsOldLocationCommand covers the headline breaking change. The
+// old command must fail, and it must say where the replacement lives: a user
+// with it in a script or in shell history gets no other signal from the CLI.
 func TestRootRejectsOldLocationCommand(t *testing.T) {
 	isolate(t)
 
 	_, _, err := run(t, "location", "list")
-	require.ErrorContains(t, err, `unknown command "location"`)
+	require.Error(t, err)
 	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.ErrorContains(t, err, "anexia core location list")
 }
 
 // TestUsageMistakesExitWithUsageCode pins the exit code for every way a user
@@ -155,6 +163,84 @@ func TestUsageMistakesExitWithUsageCode(t *testing.T) {
 			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err), "%v must exit with the usage code", tt.args)
 		})
 	}
+}
+
+// TestNonPositiveTimeoutIsAUsageMistake covers the user who passes a timeout
+// that cannot succeed. Every request under a zero or negative deadline fails
+// immediately, so reporting it as a timeout and advising the user to raise the
+// value they just chose explains nothing. It is a bad flag value, like --page 0,
+// and the Engine should never be contacted.
+func TestNonPositiveTimeoutIsAUsageMistake(t *testing.T) {
+	for _, timeout := range []string{"0", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, twoLocations)
+
+			_, _, err := run(t, "core", "location", "list",
+				"--timeout", timeout, "--token", "tok", "--api-base-url", srv.URL)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, err.Error(), "--timeout")
+			require.Empty(t, last.path, "no request should be made under an impossible deadline")
+		})
+	}
+}
+
+// TestInvalidOutputFormatIsRejectedByEveryCommand covers the script that asks
+// for a format the CLI does not have. Accepting the flag and then ignoring it
+// is worse than refusing it: a caller passing -o json to a write verb has no
+// way to notice it got prose instead, and a typo silently produces the default
+// format. Every command that takes --output has to reject a bad value, whether
+// or not it happens to print an object.
+func TestInvalidOutputFormatIsRejectedByEveryCommand(t *testing.T) {
+	commands := [][]string{
+		{"core", "location", "list"},
+		{"core", "location", "get", "id-1"},
+		{"core", "tag", "list"},
+		{"core", "tag", "get", "t-1"},
+		{"core", "tag", "create", "--name", "prod", "--service", "s-1"},
+		{"core", "tag", "delete", "t-1", "--service", "s-1", "--yes"},
+		{"core", "service", "list"},
+		{"core", "resource", "list"},
+		{"core", "resource", "get", "r-1"},
+		{"core", "resource", "tag", "list", "r-1"},
+		{"core", "resource", "tag", "add", "r-1", "prod"},
+		{"core", "resource", "tag", "remove", "r-1", "prod"},
+	}
+
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, `{"data":[]}`)
+
+			_, _, err := run(t, append(args,
+				"-o", "xml", "--token", "tok", "--api-base-url", srv.URL)...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, err.Error(), "invalid output format")
+			require.Empty(t, last.path, "a rejected flag value must not reach the Engine")
+		})
+	}
+}
+
+// TestConfirmationWithoutInputTellsTheUserAboutYes covers the CI runner or
+// cron job that pipes nothing to stdin. The prompt cannot be answered there,
+// so exiting 7 with a bare "canceled" leaves the operator guessing. The error
+// has to name the flag that makes the command usable unattended.
+func TestConfirmationWithoutInputTellsTheUserAboutYes(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	// No input at all, which is what a closed or empty stdin looks like.
+	_, _, err := runWithInput(t, "", "core", "tag", "delete", "t-1",
+		"--service", "s-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Contains(t, err.Error(), "--yes")
+	require.Empty(t, last.path, "a canceled delete must not reach the Engine")
 }
 
 func TestMissingTokenExitsWithAuthCode(t *testing.T) {
@@ -189,13 +275,22 @@ func TestEngineFailuresExitWithTheDocumentedCode(t *testing.T) {
 	}
 
 	// The Engine does not always repeat its status in the response body, and
-	// the exit code must not depend on whether it does.
+	// the exit code must not depend on whether it does. A bodyless response is
+	// ordinary for a failed DELETE, and a proxy or WAF in front of the Engine
+	// answers with HTML rather than JSON, so neither shape may change the
+	// classification either.
 	bodies := map[string]func(int) string{
 		"body echoes the status": func(status int) string {
 			return `{"error":{"code":` + strconv.Itoa(status) + `,"message":"nope"}}`
 		},
 		"body omits the status": func(int) string {
 			return `{"error":{"message":"nope"}}`
+		},
+		"body is empty": func(int) string {
+			return ""
+		},
+		"body is not json": func(int) string {
+			return `<html><body>Forbidden</body></html>`
 		},
 	}
 

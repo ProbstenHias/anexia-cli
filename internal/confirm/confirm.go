@@ -12,16 +12,16 @@ import (
 )
 
 // Prompt asks the user to confirm the action described by what, writing the
-// question to out and reading a yes/no answer from in. An empty or unreadable
-// answer counts as no. Callers pass assumeYes so the --yes flag is honored in
-// one place instead of at every call site.
+// question to out and reading a yes/no answer from in. Anything other than yes
+// counts as no. Callers pass assumeYes so the --yes flag is honored in one
+// place instead of at every call site.
 func Prompt(in io.Reader, out io.Writer, what string, assumeYes bool) error {
 	if assumeYes {
 		return nil
 	}
 
 	if in == nil {
-		return fmt.Errorf("%w: %s needs confirmation but no input is available, pass --yes", errmap.ErrCanceled, what)
+		return unattended(what)
 	}
 
 	if _, err := fmt.Fprintf(out, "%s [y/N]: ", what); err != nil {
@@ -34,10 +34,22 @@ func Prompt(in io.Reader, out io.Writer, what string, assumeYes bool) error {
 		return fmt.Errorf("reading confirmation: %w", err)
 	}
 
+	// Nothing at all to read means nobody is there to answer, which is the
+	// normal shape for a scheduled job. Saying so beats reporting a refusal
+	// the user never made.
+	if errors.Is(err, io.EOF) && answer == "" {
+		return unattended(what)
+	}
+
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "y", "yes":
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", errmap.ErrCanceled, what)
 	}
+}
+
+// unattended reports that confirmation was impossible rather than refused.
+func unattended(what string) error {
+	return fmt.Errorf("%w: %s needs confirmation but there is nothing to read an answer from, pass --yes", errmap.ErrCanceled, what)
 }

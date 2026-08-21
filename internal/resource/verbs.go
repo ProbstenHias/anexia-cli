@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -57,7 +58,7 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 			applyFilters(&filter)
 		}
 
-		items, err := fetch(ctx, a, PO(&filter), page, limit, all)
+		items, err := fetch(ctx, a, PO(&filter), spec.plural(), page, limit, all)
 		if err != nil {
 			return env.Fail(fmt.Errorf("listing %s: %w", spec.plural(), err))
 		}
@@ -73,6 +74,18 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 // does not depend on the server behaving.
 const maxPages = 1000
 
+// pageLimitError reports a walk that hit the backstop. The advice names the
+// ceiling, because "raise --limit" is not actionable to someone already at it.
+func pageLimitError(limit int) error {
+	if limit < MaxLimit {
+		return fmt.Errorf("gave up after %d pages of %d: raise --limit (up to %d) to fetch more per request",
+			maxPages, limit, MaxLimit)
+	}
+
+	return fmt.Errorf("gave up after %d pages of %d: narrow the results with a filter, or fetch pages individually with --page",
+		maxPages, limit)
+}
+
 // fetch reads one page of objects, or every page from the requested one on
 // when all is set.
 //
@@ -82,17 +95,43 @@ const maxPages = 1000
 // loop with it skips a page whenever the caller starts past page one. Next is
 // still called, but only to decode the body already in hand.
 //
-// The walk ends on an empty page, or earlier when the Engine reports a total
-// page count. Nothing weaker is safe: the page and limit fields a response
-// carries are all optional, and the library reports a missing field and a
-// literal one as the same zero, so neither the reported page nor the applied
-// page size can tell a last page from a terse response.
-func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page, limit int, all bool) ([]O, error) {
+// The walk ends on an empty page and on nothing else. Every paging field a
+// response carries is optional and none of them is trustworthy: the library
+// reports a missing page or limit as the same zero it reports a literal one as,
+// and a total page count computed from the requested limit understates the
+// truth whenever the Engine caps its page size lower. Each of those has already
+// cost a release a silent truncation, so the page contents are the only signal
+// left worth acting on.
+func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plural string, page, limit int, all bool) ([]O, error) {
+	paginated, err := paginates(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	if !paginated {
+		// The library drops the page parameter for these, so every request
+		// returns the same full result set: asking again is pointless, and
+		// asking for a later page cannot be answered at all.
+		if page > 1 {
+			return nil, errmap.Usagef("%s does not support paging, so --page %d cannot be served", plural, page)
+		}
+
+		all = false
+	}
+
 	items := make([]O, 0, limit)
 
 	for p := page; ; p++ {
 		var info types.PageInfo
 		if err := a.List(ctx, filter, api.Paged(uint(p), uint(limit), &info)); err != nil {
+			// Some endpoints answer a page past the end with a 404 instead of
+			// an empty list. A walk always asks one page beyond the results, so
+			// that is the end rather than a failure. On the first page it is a
+			// real miss and the caller has to hear about it.
+			if all && p > page && errors.Is(err, api.ErrNotFound) {
+				break
+			}
+
 			return nil, err
 		}
 
@@ -110,18 +149,30 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, page
 			break
 		}
 
-		// A total page count is advisory, but when the Engine reports one
-		// there is no reason to ask for anything beyond it.
-		if total := info.TotalPages(); total > 0 && uint(p) >= total {
-			break
-		}
-
 		if p-page+1 >= maxPages {
-			return nil, fmt.Errorf("gave up after %d pages: raise --limit or drop --all", maxPages)
+			return nil, pageLimitError(limit)
 		}
 	}
 
 	return items, nil
+}
+
+// paginates reports whether the object's endpoint pages at all. go-anxcloud
+// asks the object the same question through PaginationSupportHook and, for the
+// ones that answer no, stops sending the page parameter entirely. A caller that
+// does not check ends up requesting the same full result set over and over.
+func paginates(ctx context.Context, obj types.Object) (bool, error) {
+	hook, ok := obj.(types.PaginationSupportHook)
+	if !ok {
+		return true, nil
+	}
+
+	paginated, err := hook.HasPagination(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking paging support: %w", err)
+	}
+
+	return paginated, nil
 }
 
 // newGetCommand builds "<noun> get <id>", the read of a single object.
@@ -189,7 +240,7 @@ func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error
 		}
 
 		if p-page+1 >= maxPages {
-			return nil, fmt.Errorf("gave up after %d pages: raise --limit or drop --all", maxPages)
+			return nil, pageLimitError(limit)
 		}
 	}
 }

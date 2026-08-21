@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "go.anx.io/go-anxcloud/pkg/apis/core/v1"
+	"go.anx.io/go-anxcloud/pkg/client"
+	"go.anx.io/go-anxcloud/pkg/core/service"
 
 	"github.com/ProbstenHias/anexia-cli/internal/anx"
 )
@@ -79,4 +81,71 @@ func TestNewAPIUsesBaseURLAndToken(t *testing.T) {
 	require.Equal(t, "Token tok", gotAuth)
 	require.Equal(t, "/api/core/v1/location.json/id-1", gotPath)
 	require.Equal(t, "ANX04", location.Code)
+}
+
+// TestNewClientSendsTheTokenAndReachesTheBaseURL is the legacy-client mirror of
+// the check above. The two clients are built from the same options but by
+// different library constructors, so both need proof the token reaches the wire.
+func TestNewClientSendsTheTokenAndReachesTheBaseURL(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth, gotPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"identifier":"s-1","name":"svc"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	found, err := service.NewAPI(c).List(context.Background(), 1, 1)
+	require.NoError(t, err)
+
+	require.Equal(t, "Token tok", gotAuth)
+	require.Equal(t, "/api/core/v1/service.json", gotPath)
+	require.Len(t, found, 1)
+	require.Equal(t, "svc", found[0].Name)
+}
+
+// TestNewClientClassifiesAStatusWithAnUnparseableBody covers the transport that
+// backfills an error body: the legacy leaf clients only report 5xx themselves
+// and rely on the library parsing an error body for everything else, so a
+// bodyless or non-JSON 4xx would otherwise arrive with no status attached.
+func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty body", body: ""},
+		{name: "html body", body: "<html><body>Forbidden</body></html>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+			require.NoError(t, err)
+
+			_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+			require.Error(t, err)
+
+			var responseErr *client.ResponseError
+			require.ErrorAs(t, err, &responseErr, "the status must survive as a ResponseError")
+			require.NotNil(t, responseErr.Response)
+			require.Equal(t, http.StatusForbidden, responseErr.Response.StatusCode)
+		})
+	}
 }

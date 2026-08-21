@@ -2,6 +2,8 @@ package output_test
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -158,6 +160,51 @@ func TestWriterObjectYAMLUsesJSONTags(t *testing.T) {
 
 	require.NoError(t, w.Object(location{CountryCode: "AT"}))
 	require.Equal(t, "country: AT\n", buf.String())
+}
+
+// TestWriterObjectYAMLKeepsLargeNumbersExact pins that -o yaml reports the
+// same number the Engine sent. Anything routed through a float loses precision
+// above 2^53, and core resource attributes are arbitrary Engine JSON, so a
+// large identifier or byte count arriving there must survive the format
+// change: a user comparing -o json against -o yaml has to see one value.
+func TestWriterObjectYAMLKeepsLargeNumbersExact(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := output.NewWriter(&buf, output.FormatYAML)
+
+	// json.RawMessage is how the API structs carry Engine payloads the CLI
+	// does not model, so this is the realistic shape rather than a contrived
+	// one.
+	payload := map[string]any{
+		"attributes": json.RawMessage(`{"bytes":9007199254740993,"huge":12345678901234567890123}`),
+	}
+
+	require.NoError(t, w.Object(payload))
+	require.Equal(t, "attributes:\n  bytes: 9007199254740993\n  huge: 12345678901234567890123\n", buf.String())
+}
+
+// TestWriterTSVKeepsOneRecordPerLine pins that a cell containing a tab or a
+// newline cannot invent columns or rows. The whole point of tsv is feeding cut
+// and awk, so a value the Engine allows must not shift every later column of
+// that record.
+func TestWriterTSVKeepsOneRecordPerLine(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := output.NewWriter(&buf, output.FormatTSV)
+
+	require.NoError(t, w.Table(
+		[]string{"name", "identifier"},
+		[][]string{{"a\tb\nc\rd", "t-1"}},
+	))
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	require.Len(t, lines, 2, "one header line and one record line")
+
+	fields := strings.Split(lines[1], "\t")
+	require.Len(t, fields, 2, "a record must keep exactly as many fields as there are columns")
+	require.Equal(t, "t-1", fields[1], "the identifier column must still hold the identifier")
 }
 
 func TestWriterObjectYAMLRejectsUnencodable(t *testing.T) {

@@ -283,6 +283,91 @@ func TestCoreResourceTagRemove(t *testing.T) {
 	require.Equal(t, "untagged resource r-1\n", stderr)
 }
 
+// TestCoreResourceTagAddAppliesEveryTag covers the documented multi-tag form.
+// Both the README and the help text advertise "add <resource-id> <tag>...", so
+// a user passing three tags has to end up with three tags: silently applying
+// only the first would look like it worked.
+func TestCoreResourceTagAddAppliesEveryTag(t *testing.T) {
+	isolate(t)
+
+	var paths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, stderr, err := run(t, "core", "resource", "tag", "add", "r-1", "prod", "staging", "eu",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"POST /api/core/v1/resource.json/r-1/tags/prod",
+		"POST /api/core/v1/resource.json/r-1/tags/staging",
+		"POST /api/core/v1/resource.json/r-1/tags/eu",
+	}, paths)
+	require.Equal(t, "tagged resource r-1\n", stderr)
+}
+
+// TestCoreResourceTagRemoveRemovesEveryTag is the counterpart: dropping tags
+// after the first would leave the resource tagged while reporting success.
+func TestCoreResourceTagRemoveRemovesEveryTag(t *testing.T) {
+	isolate(t)
+
+	var paths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, stderr, err := run(t, "core", "resource", "tag", "remove", "r-1", "prod", "staging",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"DELETE /api/core/v1/resource.json/r-1/tags/prod",
+		"DELETE /api/core/v1/resource.json/r-1/tags/staging",
+	}, paths)
+	require.Equal(t, "untagged resource r-1\n", stderr)
+}
+
+// TestCoreResourceGetDecodesTheEngineEnvelope covers the one Engine object in
+// the tree with a custom decode path: corev1.Resource flattens its nested tag
+// objects into names, and only on a get. A response-shape change there would
+// otherwise surface as a runtime bug with a green suite.
+func TestCoreResourceGetDecodesTheEngineEnvelope(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusOK, `{
+	  "identifier": "r-1",
+	  "name": "vm-1",
+	  "resource_type": {"identifier": "t-1", "name": "Virtual Machine"},
+	  "created_at": "2024-01-02",
+	  "tags": [{"name": "prod"}, {"name": "eu"}]
+	}`)
+
+	stdout, _, err := run(t, "core", "resource", "get", "r-1", "-o", "json",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, "/api/core/v1/resource.json/r-1", last.path)
+
+	var got struct {
+		Identifier string   `json:"identifier"`
+		Name       string   `json:"name"`
+		Tags       []string `json:"tags"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+
+	require.Equal(t, "r-1", got.Identifier)
+	require.Equal(t, "vm-1", got.Name)
+	require.Equal(t, []string{"prod", "eu"}, got.Tags, "nested tag objects must arrive as names")
+}
+
 func TestCoreServiceList(t *testing.T) {
 	isolate(t)
 	srv, last := server(t, http.StatusOK,
@@ -340,15 +425,24 @@ func TestCoreServiceListAllWalksPages(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	stdout, _, err := run(t, "core", "service", "list", "--all", "--limit", "2",
+	stdout, _, err := run(t, "core", "service", "list", "--all", "--limit", "2", "-o", "json",
 		"--token", "tok", "--api-base-url", srv.URL)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{1, 2, 3, 4}, seen)
 
-	for _, want := range []string{"s-1-a", "s-1-b", "s-2-a", "s-2-b", "s-3-a"} {
-		require.Contains(t, stdout, want)
+	// Exact and ordered, so a page collected twice cannot pass.
+	var got []struct {
+		Identifier string `json:"identifier"`
 	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+
+	ids := make([]string, 0, len(got))
+	for _, g := range got {
+		ids = append(ids, g.Identifier)
+	}
+
+	require.Equal(t, []string{"s-1-a", "s-1-b", "s-2-a", "s-2-b", "s-3-a"}, ids)
 }
 
 func TestCoreServiceListEmpty(t *testing.T) {

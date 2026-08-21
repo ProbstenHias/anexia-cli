@@ -2,9 +2,11 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -89,13 +91,13 @@ func (w *Writer) Table(headers []string, rows [][]string) error {
 			upper[i] = strings.ToUpper(h)
 		}
 
-		if _, err := fmt.Fprintln(tw, strings.Join(upper, "\t")); err != nil {
+		if _, err := fmt.Fprintln(tw, flatten(upper)); err != nil {
 			return err
 		}
 	}
 
 	for _, row := range rows {
-		if _, err := fmt.Fprintln(tw, strings.Join(row, "\t")); err != nil {
+		if _, err := fmt.Fprintln(tw, flatten(row)); err != nil {
 			return err
 		}
 	}
@@ -106,18 +108,37 @@ func (w *Writer) Table(headers []string, rows [][]string) error {
 // tsv writes unaligned tab-separated fields, suited to cut and awk.
 func (w *Writer) tsv(headers []string, rows [][]string) error {
 	if !w.noHeaders {
-		if _, err := fmt.Fprintln(w.out, strings.Join(headers, "\t")); err != nil {
+		if _, err := fmt.Fprintln(w.out, flatten(headers)); err != nil {
 			return err
 		}
 	}
 
 	for _, row := range rows {
-		if _, err := fmt.Fprintln(w.out, strings.Join(row, "\t")); err != nil {
+		if _, err := fmt.Fprintln(w.out, flatten(row)); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// flatten joins fields with tabs after replacing any tab or line break inside
+// a field with a space. The Engine does not forbid either in a name, and one
+// arriving unescaped would add columns and rows to the output, silently
+// shifting every field after it for tools reading the stream.
+func flatten(fields []string) string {
+	clean := make([]string, len(fields))
+	for i, f := range fields {
+		clean[i] = strings.Map(func(r rune) rune {
+			if r == '\t' || r == '\n' || r == '\r' {
+				return ' '
+			}
+
+			return r
+		}, f)
+	}
+
+	return strings.Join(clean, "\t")
 }
 
 // Object writes v in the writer's structured format. Callers must only use it
@@ -146,17 +167,55 @@ func (w *Writer) yaml(v any) error {
 		return fmt.Errorf("encoding yaml: %w", err)
 	}
 
+	// UseNumber keeps every number as the digits the Engine sent. Decoding
+	// into the default float64 would round anything past 2^53, and object
+	// attributes are arbitrary Engine JSON that may carry such values.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+
 	var intermediate any
-	if err := yaml.Unmarshal(raw, &intermediate); err != nil {
+	if err := dec.Decode(&intermediate); err != nil {
 		return fmt.Errorf("encoding yaml: %w", err)
 	}
 
 	enc := yaml.NewEncoder(w.out)
 	enc.SetIndent(2)
 
-	if err := enc.Encode(intermediate); err != nil {
+	if err := enc.Encode(numbersAsScalars(intermediate)); err != nil {
 		return fmt.Errorf("encoding yaml: %w", err)
 	}
 
 	return enc.Close()
+}
+
+// numbersAsScalars rewrites the json.Number values UseNumber produced into
+// something the YAML encoder emits unquoted. yaml.v3 has no json.Number
+// knowledge and would render one as a struct, so integers become int64 and
+// everything else keeps its original digits behind a plain resolver-safe node.
+func numbersAsScalars(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			t[k] = numbersAsScalars(val)
+		}
+
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = numbersAsScalars(val)
+		}
+
+		return t
+	case json.Number:
+		if i, err := strconv.ParseInt(t.String(), 10, 64); err == nil {
+			return i
+		}
+
+		// Too large for an int64, or fractional: emit the digits verbatim
+		// as an untagged scalar so no precision is lost on the way out and
+		// the reader's resolver picks the type it would have picked anyway.
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: t.String()}
+	default:
+		return v
+	}
 }

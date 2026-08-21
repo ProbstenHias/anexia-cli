@@ -3,6 +3,7 @@ package confirm_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -58,7 +59,6 @@ func TestPromptRejectsAnswers(t *testing.T) {
 		{"empty", "\n"},
 		{"no", "n\n"},
 		{"nonsense", "maybe\n"},
-		{"no input at all", ""},
 	}
 
 	for _, tt := range tests {
@@ -75,16 +75,33 @@ func TestPromptRejectsAnswers(t *testing.T) {
 	}
 }
 
+// TestPromptWithoutInputAsksForYesFlag covers both ways there can be nobody to
+// answer: no reader at all, and a reader that is already at EOF, which is what
+// an unattended run actually hands over. Neither is a refusal, so the error has
+// to point at --yes rather than claim the user said no.
 func TestPromptWithoutInputAsksForYesFlag(t *testing.T) {
 	t.Parallel()
 
-	var out bytes.Buffer
+	tests := []struct {
+		name string
+		in   io.Reader
+	}{
+		{"no reader", nil},
+		{"reader at eof", strings.NewReader("")},
+	}
 
-	err := confirm.Prompt(nil, &out, "delete tag", false)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.ErrorIs(t, err, errmap.ErrCanceled)
-	assert.Contains(t, err.Error(), "pass --yes")
-	assert.Empty(t, out.String())
+			var out bytes.Buffer
+
+			err := confirm.Prompt(tt.in, &out, "delete tag", false)
+
+			require.ErrorIs(t, err, errmap.ErrCanceled)
+			assert.Contains(t, err.Error(), "pass --yes")
+		})
+	}
 }
 
 // failingReader reports a failure that is not io.EOF.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"testing"
 	"time"
@@ -56,6 +57,47 @@ func locationSpec() resource.Spec[corev1.Location, *corev1.Location] {
 	}
 }
 
+// unpagedEndpoint is where the fictional non-paginating object below lives.
+const unpagedEndpoint = "/api/test/v1/unpaged.json"
+
+// unpaged stands in for a real Engine object whose endpoint returns everything
+// in one response and ignores paging entirely. go-anxcloud signals that with
+// PaginationSupportHook, and clouddns zones and records and vsphere templates
+// all do it. The library then stops sending the page parameter at all, so every
+// request is identical.
+type unpaged struct {
+	Identifier string `json:"identifier" anxcloud:"identifier"`
+}
+
+func (u *unpaged) EndpointURL(context.Context) (*url.URL, error) {
+	return url.Parse(unpagedEndpoint)
+}
+
+func (u *unpaged) GetIdentifier(context.Context) (string, error) {
+	return u.Identifier, nil
+}
+
+func (u *unpaged) HasPagination(context.Context) (bool, error) {
+	return false, nil
+}
+
+// unpagedSpec registers the non-paginating object the same way a real one would
+// be registered.
+func unpagedSpec() resource.Spec[unpaged, *unpaged] {
+	return resource.Spec[unpaged, *unpaged]{
+		Noun:  "unpaged",
+		Short: "Work with unpaged things",
+		List:  true,
+		Get:   true,
+		Identify: func(u *unpaged, id string) {
+			u.Identifier = id
+		},
+		Columns: []resource.Column[unpaged]{
+			{Name: "identifier", Value: func(u *unpaged) string { return u.Identifier }},
+		},
+	}
+}
+
 // env implements resource.Env against a test server.
 type env struct {
 	baseURL string
@@ -97,6 +139,10 @@ type request struct {
 
 // serve starts a test server whose handler is driven by the given responses,
 // one per request in order. The last response repeats once exhausted.
+//
+// A repeating last response can mask a walk that never terminates, so an --all
+// test built on this must either end its responses with an empty page or assert
+// the exact number of requests.
 func serve(t *testing.T, responses ...string) (*env, *[]request) {
 	t.Helper()
 
@@ -295,7 +341,7 @@ func TestListRequestsTheAskedForPage(t *testing.T) {
 func TestListAllWalksEveryPage(t *testing.T) {
 	t.Parallel()
 
-	const totalPages = 4
+	const lastPage = 4
 
 	tests := []struct {
 		name      string
@@ -306,19 +352,19 @@ func TestListAllWalksEveryPage(t *testing.T) {
 		{
 			name:      "from the first page",
 			startPage: 1,
-			wantPages: []int{1, 2, 3, 4},
+			wantPages: []int{1, 2, 3, 4, 5},
 			wantIDs:   []string{"id-p1", "id-p2", "id-p3", "id-p4"},
 		},
 		{
 			name:      "from a later page",
 			startPage: 2,
-			wantPages: []int{2, 3, 4},
+			wantPages: []int{2, 3, 4, 5},
 			wantIDs:   []string{"id-p2", "id-p3", "id-p4"},
 		},
 		{
 			name:      "from the last page",
-			startPage: totalPages,
-			wantPages: []int{4},
+			startPage: lastPage,
+			wantPages: []int{4, 5},
 			wantIDs:   []string{"id-p4"},
 		},
 	}
@@ -329,17 +375,22 @@ func TestListAllWalksEveryPage(t *testing.T) {
 
 			var seen []int
 
-			// One object per page, with --limit 1 so every page is full and
-			// the walk only stops at the reported total.
+			// One object per page with --limit 1, so every page is full until
+			// the results run out and the walk sees an empty page.
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				page, err := strconv.Atoi(r.URL.Query().Get("page"))
 				require.NoError(t, err)
 
 				seen = append(seen, page)
 
+				var objects []corev1.Location
+
+				if page <= lastPage {
+					objects = []corev1.Location{{Identifier: fmt.Sprintf("id-p%d", page)}}
+				}
+
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(paged(t, page, totalPages, 1,
-					corev1.Location{Identifier: fmt.Sprintf("id-p%d", page)})))
+				_, _ = w.Write([]byte(paged(t, page, lastPage, 1, objects...)))
 			}))
 			t.Cleanup(srv.Close)
 
@@ -366,12 +417,15 @@ func TestListAllStopsOnAnEmptyPage(t *testing.T) {
 		paged(t, 2, 0, 2, corev1.Location{Identifier: "id-3"}),
 		paged(t, 3, 0, 2),
 	)
+	e.format = output.FormatJSON
 
 	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "2")
 
 	require.NoError(t, err)
 	assert.Len(t, *seen, 3)
-	assert.Contains(t, stdout, "id-3")
+
+	// Exact rather than Contains, so a page appended twice cannot pass.
+	assert.Equal(t, []string{"id-1", "id-2", "id-3"}, identifiers(t, stdout))
 }
 
 // TestListAllWalksEveryResponseShape drives --all over every envelope the
@@ -461,6 +515,154 @@ func TestListAllWalksEveryResponseShape(t *testing.T) {
 	}
 }
 
+// TestListAllOutlivesAWrongTotalPages covers an Engine whose reported
+// total_pages understates what it actually serves, which happens when the count
+// is computed from the requested limit while the Engine caps the page size
+// lower. Trusting the count ends the walk on a full page and drops the rest of
+// the results without saying so.
+func TestListAllOutlivesAWrongTotalPages(t *testing.T) {
+	t.Parallel()
+
+	const lastPage = 5
+
+	var seen []int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		seen = append(seen, page)
+
+		var objects []corev1.Location
+
+		if page <= lastPage {
+			objects = []corev1.Location{{Identifier: fmt.Sprintf("id-p%d", page)}}
+		}
+
+		// The Engine claims two pages but keeps serving results past them.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(paged(t, page, 2, 1, objects...)))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatJSON}
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3, 4, 5, 6}, seen)
+	assert.Equal(t, []string{"id-p1", "id-p2", "id-p3", "id-p4", "id-p5"}, identifiers(t, stdout))
+}
+
+// TestListAllKeepsResultsWhenTheEngineRejectsThePageAfterTheLast covers an
+// Engine that answers a page past the end with 404 rather than an empty list.
+// The walk always asks one page beyond the results, so that answer arrives on
+// every complete walk and must not throw away everything already collected.
+func TestListAllKeepsResultsWhenTheEngineRejectsThePageAfterTheLast(t *testing.T) {
+	t.Parallel()
+
+	const lastPage = 3
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if page > lastPage {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":404,"message":"page not found"}}`))
+
+			return
+		}
+
+		_, _ = w.Write([]byte(paged(t, page, 0, 1,
+			corev1.Location{Identifier: fmt.Sprintf("id-p%d", page)})))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatJSON}
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"id-p1", "id-p2", "id-p3"}, identifiers(t, stdout))
+}
+
+// TestListReportsANotFoundOnTheFirstPage separates the case above from a
+// genuine miss: if the very first page is rejected, nothing was collected and
+// the user needs to hear about it.
+func TestListReportsANotFoundOnTheFirstPage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"nope"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
+
+	_, _, err := exec(resource.Command(e, locationSpec()), "list", "--all")
+
+	require.Error(t, err)
+	assert.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+}
+
+// TestListAllOnANonPaginatingResourceFetchesOnce covers a resource whose
+// endpoint returns everything at once. Asking for every page is already
+// satisfied by the first response, so the walk must not keep asking, and it must
+// not fail.
+func TestListAllOnANonPaginatingResourceFetchesOnce(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"identifier":"u-1"},{"identifier":"u-2"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatJSON}
+
+	stdout, _, err := exec(resource.Command(e, unpagedSpec()), "list", "--all", "--limit", "2")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, requests, "the endpoint returns everything in one response")
+	assert.Equal(t, []string{"u-1", "u-2"}, identifiers(t, stdout))
+}
+
+// TestListPageBeyondFirstOnANonPaginatingResourceIsRejected covers the user who
+// asks for page two of a resource that has only ever one page. The Engine
+// ignores the parameter, so honoring the request silently returns page one and
+// the user cannot tell. Saying so is the only honest answer.
+func TestListPageBeyondFirstOnANonPaginatingResourceIsRejected(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"identifier":"u-1"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
+
+	_, _, err := exec(resource.Command(e, unpagedSpec()), "list", "--page", "2")
+
+	require.Error(t, err)
+	assert.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	assert.Contains(t, err.Error(), "does not support paging")
+	assert.Zero(t, requests, "nothing to ask for once the request is known to be unanswerable")
+}
+
 // TestListAllWalksPagesCappedBelowTheLimit covers an Engine that caps its page
 // size below --limit. Comparing the page length against the requested limit
 // would read every page as short and silently drop the rest of the results.
@@ -528,7 +730,10 @@ func TestListAllGivesUpOnAnEndlessEngine(t *testing.T) {
 	_, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
 
 	require.Error(t, err)
+	// The advice has to name the ceiling, because a user already at --limit
+	// 1000 cannot act on "raise --limit".
 	assert.Contains(t, err.Error(), "gave up after 1000 pages")
+	assert.Contains(t, err.Error(), "up to 1000")
 	assert.Equal(t, 1000, requests)
 }
 
@@ -804,7 +1009,17 @@ func TestFetchPagesGivesUpOnAnEndlessEngine(t *testing.T) {
 	})
 
 	require.ErrorContains(t, err, "gave up after 1000 pages")
+	require.ErrorContains(t, err, "up to 1000")
 	assert.Equal(t, 1000, calls)
+
+	// At the ceiling the advice cannot be "raise --limit", so it has to
+	// suggest something the user can actually do.
+	_, err = resource.FetchPages(1, resource.MaxLimit, true, func(int) ([]string, error) {
+		return []string{"always"}, nil
+	})
+
+	require.ErrorContains(t, err, "narrow the results with a filter")
+	require.NotContains(t, err.Error(), "raise --limit")
 }
 
 func TestRenderListIsSharedWithLegacyCommands(t *testing.T) {

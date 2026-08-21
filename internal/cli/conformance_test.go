@@ -13,6 +13,7 @@ import (
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
+	"github.com/ProbstenHias/anexia-cli/internal/output"
 )
 
 // verbs are the only command names allowed at a leaf of the command tree. The
@@ -31,6 +32,10 @@ var verbs = map[string]bool{
 	// is not addressable on its own, such as a resource's tags.
 	"add":    true,
 	"remove": true,
+
+	// destroy is accepted as an alias of delete for users coming from the
+	// Engine's own vocabulary. It is never a command name.
+	"destroy": true,
 
 	// Local commands that talk to the config file or the binary itself
 	// rather than to the Engine.
@@ -68,9 +73,13 @@ func singular(name string) bool {
 	return !strings.HasSuffix(name, "s") || strings.HasSuffix(name, "ss")
 }
 
-// walk visits cmd and every descendant, skipping the completion subtree.
+// walk visits cmd and every descendant, skipping cobra's completion subtree
+// and any hidden command.
+//
+// Hidden commands are tombstones for names that have moved. They exist only to
+// point at a replacement, so the naming and verb rules do not apply to them.
 func walk(cmd *cobra.Command, visit func(*cobra.Command)) {
-	if cmd.Name() == "completion" {
+	if cmd.Name() == "completion" || cmd.Hidden {
 		return
 	}
 
@@ -85,9 +94,17 @@ func walk(cmd *cobra.Command, visit func(*cobra.Command)) {
 func commands(t *testing.T) []*cobra.Command {
 	t.Helper()
 
-	root := cli.NewRootCommand(cli.Deps{})
+	_, found := tree(t)
 
-	var found []*cobra.Command
+	return found
+}
+
+// tree returns a root command and every command below it, so tests that need
+// to resolve a path back to a command compare pointers from the same tree.
+func tree(t *testing.T) (root *cobra.Command, found []*cobra.Command) {
+	t.Helper()
+
+	root = cli.NewRootCommand(cli.Deps{})
 
 	walk(root, func(cmd *cobra.Command) {
 		if cmd.HasParent() {
@@ -97,7 +114,7 @@ func commands(t *testing.T) []*cobra.Command {
 
 	require.NotEmpty(t, found)
 
-	return found
+	return root, found
 }
 
 // path renders a command's full invocation path for test failure messages.
@@ -117,6 +134,24 @@ func TestConformanceLeavesUseKnownVerbs(t *testing.T) {
 	}
 }
 
+// TestConformanceLeafAliasesUseKnownVerbs closes the gap the verb check leaves:
+// an alias is another name for the command, so "rm" or "describe" smuggled in
+// as an alias would reintroduce vocabulary the design rules out.
+func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range commands(t) {
+		if cmd.HasSubCommands() {
+			continue
+		}
+
+		for _, alias := range cmd.Aliases {
+			assert.True(t, verbs[alias],
+				"%s: alias %q is not a known verb, add it to the conformance list deliberately", path(cmd), alias)
+		}
+	}
+}
+
 func TestConformanceNounsAreSingular(t *testing.T) {
 	t.Parallel()
 
@@ -130,17 +165,42 @@ func TestConformanceNounsAreSingular(t *testing.T) {
 }
 
 // TestConformanceNounsCarryAPluralAlias checks the other half of the singular
-// rule: a user who reaches for the plural must land on the same command.
+// rule: a user who reaches for the plural must land on the same command. The
+// alias is resolved through the tree rather than compared to a computed plural,
+// so an irregular plural still passes but a wrong alias does not.
 func TestConformanceNounsCarryAPluralAlias(t *testing.T) {
 	t.Parallel()
 
-	for _, cmd := range commands(t) {
+	root, found := tree(t)
+
+	checked := 0
+
+	for _, cmd := range found {
 		if !cmd.HasSubCommands() || groupNames[cmd.Name()] {
 			continue
 		}
 
-		assert.NotEmpty(t, cmd.Aliases, "%s: a noun must accept its plural as an alias", path(cmd))
+		require.NotEmpty(t, cmd.Aliases, "%s: a noun must accept its plural as an alias", path(cmd))
+
+		// Swap the noun for each alias in its own invocation path and
+		// confirm the tree still lands on the same command.
+		parts := strings.Fields(strings.TrimPrefix(path(cmd), "anexia "))
+
+		for _, alias := range cmd.Aliases {
+			aliased := make([]string, len(parts))
+			copy(aliased, parts)
+			aliased[len(aliased)-1] = alias
+
+			resolved, _, err := root.Find(aliased)
+
+			require.NoError(t, err, "%s: alias %q does not resolve", path(cmd), alias)
+			assert.Same(t, cmd, resolved, "%s: alias %q resolves to %s instead", path(cmd), alias, path(resolved))
+
+			checked++
+		}
 	}
+
+	assert.Positive(t, checked, "the tree should have nouns to check")
 }
 
 // TestConformanceRelationListsOmitPagingFlags is the counterpart to the
@@ -220,6 +280,12 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 		action, _, found := strings.Cut(message, ": ")
 		require.True(t, found, "%s: %q must read as \"<action>: <cause>\"", full, message)
 
+		// The action names what the command was doing, so it reads as a
+		// gerund. Without this the check passes on any cause that happens
+		// to contain a colon, with no action prefix at all.
+		assert.True(t, strings.HasSuffix(strings.Fields(action)[0], "ing"),
+			"%s: %q must open with the action, like \"listing tags: ...\"", full, message)
+
 		assert.Equal(t, strings.ToLower(action[:1]), action[:1], "%s: %q must start lowercase", full, message)
 		assert.False(t, strings.HasSuffix(message, "."), "%s: %q must not end in a period", full, message)
 		assert.NotContains(t, message, "received error from api",
@@ -250,6 +316,12 @@ func TestConformanceGroupsPrintHelpAndTakeNoArgs(t *testing.T) {
 
 		assert.NotNil(t, cmd.RunE, "%s: a group must print help instead of erroring", path(cmd))
 
+		// A group must reject arguments rather than guess a default verb,
+		// so a mistyped subcommand is reported instead of printing help
+		// and exiting zero.
+		assert.Error(t, cmd.ValidateArgs([]string{"bogus"}),
+			"%s: a group must reject arguments so an unknown subcommand is an error", path(cmd))
+
 		stdout, _, err := run(t, strings.Fields(strings.TrimPrefix(path(cmd), "anexia "))...)
 
 		require.NoError(t, err, "%s: bare invocation must succeed", path(cmd))
@@ -272,9 +344,13 @@ func TestConformanceLeavesValidateArgumentCount(t *testing.T) {
 // takesPositionalArgs reports whether cmd accepts at least one positional
 // argument, probing counts because validators such as ExactArgs(2) reject a
 // single argument.
+//
+// A command without a validator is reported as taking none, so the missing
+// validator fails only the test that owns that rule instead of every test
+// built on this helper.
 func takesPositionalArgs(cmd *cobra.Command) bool {
 	if cmd.Args == nil {
-		return true
+		return false
 	}
 
 	for n := 1; n <= 3; n++ {
@@ -356,20 +432,45 @@ func TestConformanceNoCommandShadowsAGlobalFlag(t *testing.T) {
 	})
 }
 
+// TestConformanceEveryEngineCommandSupportsEveryOutputFormat walks every leaf
+// that talks to the Engine, because a command that renders nothing can still
+// accept -o and ignore it, which is only visible by trying each one.
 func TestConformanceEveryEngineCommandSupportsEveryOutputFormat(t *testing.T) {
 	// isolate sets environment variables, so this test cannot be parallel.
-	// Rendering is centralized, so it is enough to prove the flag is
-	// accepted everywhere and rejected consistently.
 	isolate(t)
 
-	for _, format := range []string{"table", "json", "yaml", "tsv"} {
-		_, _, err := run(t, "core", "location", "list", "-o", format)
+	checked := 0
 
-		// Without a token the command fails on authentication, never on
-		// the format, which proves the format parsed.
-		require.ErrorContains(t, err, "not authenticated", "format %q must be accepted", format)
+	for _, cmd := range commands(t) {
+		if cmd.HasSubCommands() || !strings.HasPrefix(cmd.CommandPath(), "anexia core ") {
+			continue
+		}
+
+		full := cmd.CommandPath()
+
+		for _, format := range append(output.Formats, "xml") {
+			args := append(invocation(cmd), "-o", string(format))
+
+			_, _, err := runWithInput(t, "y\n", args...)
+			require.Error(t, err, "%s: expected a failure without a token", full)
+
+			if format == "xml" {
+				// A rejected format must be reported before anything
+				// else, even by a command that renders no object.
+				assert.Equal(t, errmap.ExitUsage, errmap.ExitCode(err),
+					"%s: -o %s must be rejected as a usage mistake, got %q", full, format, errmap.Message(err))
+
+				continue
+			}
+
+			// Without a token every command fails on authentication, never
+			// on the format, which proves the format was accepted.
+			assert.Equal(t, errmap.ExitAuth, errmap.ExitCode(err),
+				"%s: -o %s must be accepted, got %q", full, format, errmap.Message(err))
+		}
+
+		checked++
 	}
 
-	_, _, err := run(t, "core", "location", "list", "-o", "xml")
-	require.ErrorContains(t, err, "invalid output format")
+	assert.Positive(t, checked, "the tree should have engine commands to check")
 }

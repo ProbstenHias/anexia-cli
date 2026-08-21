@@ -59,8 +59,8 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 			defer cancel()
 
 			// The legacy client names its last parameter sortAscending but
-			// sends it as sort_descending, so it is inverted here to make the
-			// flag mean what it says.
+			// sends it verbatim as sort_descending, so --descending is passed
+			// straight through and the flag means what it says.
 			a := tags.NewAPI(c)
 
 			found, err := resource.FetchPages(page, limit, all, func(p int) ([]tags.Summary, error) {
@@ -308,10 +308,11 @@ func newCoreResourceTagAddCommand(opts *globalOptions) *cobra.Command {
 
 func newCoreResourceTagRemoveCommand(opts *globalOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:     "remove <resource-id> <tag>...",
-		Aliases: []string{"delete"},
-		Short:   "Remove tags from a resource",
-		Args:    cobra.MinimumNArgs(2),
+		// No delete alias: removing a tag from a resource does not delete
+		// the tag, and "core tag delete" is the command that does.
+		Use:   "remove <resource-id> <tag>...",
+		Short: "Remove tags from a resource",
+		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := opts.API(cmd.Flags())
 			if err != nil {
