@@ -119,11 +119,25 @@ func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		body string
+		name   string
+		status int
+		body   string
 	}{
-		{name: "empty body", body: ""},
-		{name: "html body", body: "<html><body>Forbidden</body></html>"},
+		{name: "empty body", status: http.StatusForbidden, body: ""},
+		{name: "html body", status: http.StatusForbidden, body: "<html><body>Forbidden</body></html>"},
+
+		// Valid JSON is not enough: the library decodes the body into its
+		// own struct, so any shape that parses but does not fit still takes
+		// the discard path. A string error field and a non-numeric code are
+		// both ordinary API gateway shapes.
+		{name: "error is a string", status: http.StatusForbidden, body: `{"error":"Forbidden"}`},
+		{name: "code is a string", status: http.StatusForbidden, body: `{"error":{"code":"FORBIDDEN","message":"no"}}`},
+		{name: "body is an array", status: http.StatusForbidden, body: `["Forbidden"]`},
+		{name: "body is a bare string", status: http.StatusForbidden, body: `"Forbidden"`},
+
+		// The library treats anything outside 2xx as an error, so a redirect
+		// to a proxy login page needs the same repair.
+		{name: "redirect with html body", status: http.StatusMultipleChoices, body: "<html>login</html>"},
 	}
 
 	for _, tt := range tests {
@@ -131,7 +145,7 @@ func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
 			t.Parallel()
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusForbidden)
+				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			defer srv.Close()
@@ -145,7 +159,50 @@ func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
 			var responseErr *client.ResponseError
 			require.ErrorAs(t, err, &responseErr, "the status must survive as a ResponseError")
 			require.NotNil(t, responseErr.Response)
-			require.Equal(t, http.StatusForbidden, responseErr.Response.StatusCode)
+			require.Equal(t, tt.status, responseErr.Response.StatusCode)
 		})
 	}
+}
+
+// TestNewClientKeepsTheEngineWording checks the other side of the transport:
+// when the Engine does send a usable error body, its message must reach the
+// user rather than being replaced by the generic status text.
+func TestNewClientKeepsTheEngineWording(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"service not found"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+	require.Error(t, err)
+
+	var responseErr *client.ResponseError
+	require.ErrorAs(t, err, &responseErr)
+	require.Equal(t, "service not found", responseErr.ErrorData.Message)
+}
+
+// TestNewClientLeavesSuccessfulResponsesAlone guards the transport against
+// touching the responses it has no business rewriting.
+func TestNewClientLeavesSuccessfulResponsesAlone(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"identifier":"s-1","name":"svc"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	found, err := service.NewAPI(c).List(context.Background(), 1, 1)
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	require.Equal(t, "svc", found[0].Name)
 }

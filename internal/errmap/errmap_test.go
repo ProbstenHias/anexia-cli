@@ -217,8 +217,11 @@ func TestMessageKeepsFieldValidationDetail(t *testing.T) {
 
 	message := errmap.Message(fmt.Errorf("creating tag: %w", engineErr))
 
-	assert.Contains(t, message, "name: must not be empty")
-	assert.Contains(t, message, "service_identifier: does not exist")
+	// Exact, so the field order is pinned: Go randomizes map iteration, and a
+	// message that reorders between runs is unusable in a test or a diff.
+	assert.Equal(t,
+		"creating tag: validation failed (422) (name: must not be empty, service_identifier: does not exist)",
+		message)
 }
 
 // TestMessageRewritesEveryLegacyErrorInTheChain covers a failure reported
@@ -293,4 +296,55 @@ func TestMessageLeavesOtherErrorsAlone(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, "boom", errmap.Message(errors.New("boom")))
+}
+
+// TestMessageSurvivesADeeplyWrappedChain covers a chain far deeper than any
+// command builds. A cyclic chain is deliberately not tested: the standard
+// library's own errors.Is loops forever on one, so no Go program can survive
+// it and the CLI is not the right place to pretend otherwise.
+func TestMessageSurvivesADeeplyWrappedChain(t *testing.T) {
+	t.Parallel()
+
+	err := responseError(http.StatusNotFound, "gone")
+	for range 50 {
+		err = fmt.Errorf("wrap: %w", err)
+	}
+
+	assert.Contains(t, errmap.Message(err), "gone (404)")
+	assert.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+}
+
+// TestMessageSurvivesAJoinedChain covers the branching case: joined errors make
+// the walk a tree rather than a list.
+func TestMessageSurvivesAJoinedChain(t *testing.T) {
+	t.Parallel()
+
+	inner := responseError(http.StatusTooManyRequests, "slow down")
+	err := fmt.Errorf("outer: %w: %w", inner, errors.New("side"))
+
+	assert.Contains(t, errmap.Message(err), "slow down (429)")
+	assert.Equal(t, errmap.ExitRateLimited, errmap.ExitCode(err))
+}
+
+func TestMessageOfNilIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, errmap.Message(nil))
+}
+
+// TestMessageOrdersValidationFields pins the ordering, so the output of a
+// failed create does not shuffle between runs of the same command.
+func TestMessageOrdersValidationFields(t *testing.T) {
+	t.Parallel()
+
+	responseErr := bodylessResponseError(http.StatusUnprocessableEntity, "validation failed")
+	responseErr.ErrorData.Validation = map[string]string{
+		"name":    "required",
+		"service": "unknown",
+		"account": "closed",
+	}
+
+	assert.Equal(t,
+		"creating tag: validation failed (422) (account: closed, name: required, service: unknown)",
+		errmap.Message(fmt.Errorf("creating tag: %w", responseErr)))
 }

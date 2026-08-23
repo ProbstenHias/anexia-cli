@@ -184,27 +184,86 @@ func TestWriterObjectYAMLKeepsLargeNumbersExact(t *testing.T) {
 	require.Equal(t, "attributes:\n  bytes: 9007199254740993\n  huge: 12345678901234567890123\n", buf.String())
 }
 
-// TestWriterTSVKeepsOneRecordPerLine pins that a cell containing a tab or a
-// newline cannot invent columns or rows. The whole point of tsv is feeding cut
-// and awk, so a value the Engine allows must not shift every later column of
-// that record.
-func TestWriterTSVKeepsOneRecordPerLine(t *testing.T) {
+// TestWriterObjectYAMLKeepsNumbersNumeric checks that a number stays a number
+// for the reader, not just that its digits survive. YAML 1.1, which is what
+// PyYAML and most non-Go readers implement, only resolves an exponent form as a
+// float when it carries a decimal point or a signed exponent, so emitting the
+// JSON spelling verbatim can turn a number into a string on the way out.
+func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 	t.Parallel()
 
-	var buf bytes.Buffer
-	w := output.NewWriter(&buf, output.FormatTSV)
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "exponent without a sign", json: `1e5`, want: "1.0e+05"},
+		{name: "exponent with a fraction", json: `1.5e10`, want: "1.5e+10"},
+		{name: "negative exponent", json: `1e-7`, want: "1.0e-07"},
+		{name: "plain integer", json: `42`, want: "42"},
+		{name: "plain float", json: `0.1`, want: "0.1"},
+		{name: "beyond int64", json: `12345678901234567890123`, want: "12345678901234567890123"},
+	}
 
-	require.NoError(t, w.Table(
-		[]string{"name", "identifier"},
-		[][]string{{"a\tb\nc\rd", "t-1"}},
-	))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-	require.Len(t, lines, 2, "one header line and one record line")
+			var buf bytes.Buffer
+			w := output.NewWriter(&buf, output.FormatYAML)
 
-	fields := strings.Split(lines[1], "\t")
-	require.Len(t, fields, 2, "a record must keep exactly as many fields as there are columns")
-	require.Equal(t, "t-1", fields[1], "the identifier column must still hold the identifier")
+			require.NoError(t, w.Object(map[string]any{
+				"value": json.RawMessage(tt.json),
+			}))
+			require.Equal(t, "value: "+tt.want+"\n", buf.String())
+		})
+	}
+}
+
+// TestWriterKeepsOneRecordPerLine pins that a control byte inside a cell cannot
+// invent columns or rows, in either column format. The point of tsv is feeding
+// cut and awk, and of table is being readable, so a value the Engine allows
+// must not shift every later column of that record.
+//
+// Both formats are driven for every byte, because table and tsv split on
+// different sets: tabwriter ends a cell on a tab or a vertical tab, and a line
+// on a newline or a form feed.
+func TestWriterKeepsOneRecordPerLine(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []output.Format{output.FormatTable, output.FormatTSV} {
+		for _, bad := range []string{"\t", "\n", "\r", "\v", "\f"} {
+			var buf bytes.Buffer
+			w := output.NewWriter(&buf, format)
+
+			require.NoError(t, w.Table(
+				[]string{"name", "identifier"},
+				[][]string{{"a" + bad + "b", "t-1"}},
+			))
+
+			lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+			require.Len(t, lines, 2,
+				"%s with %q: one header line and one record line, got %q", format, bad, buf.String())
+
+			record := lines[1]
+
+			// The record must still end with the last column, so nothing has
+			// shifted or been pushed onto another line.
+			require.True(t, strings.HasSuffix(record, "t-1"),
+				"%s with %q: the identifier column must still end the record, got %q", format, bad, record)
+
+			if format == output.FormatTSV {
+				fields := strings.Split(record, "\t")
+				require.Len(t, fields, 2,
+					"%s with %q: a record must keep exactly as many fields as there are columns", format, bad)
+
+				// The byte must not survive inside the cell either, where a
+				// reader splitting on it would see a field that is not there.
+				require.NotContains(t, fields[0], bad,
+					"%s: %q must not reach the output inside a cell", format, bad)
+			}
+		}
+	}
 }
 
 func TestWriterObjectYAMLRejectsUnencodable(t *testing.T) {

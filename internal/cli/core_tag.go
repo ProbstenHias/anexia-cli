@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/spf13/cobra"
 	corev1 "go.anx.io/go-anxcloud/pkg/apis/core/v1"
@@ -11,6 +12,16 @@ import (
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 	"github.com/ProbstenHias/anexia-cli/internal/resource"
 )
+
+// queryValue escapes a value destined for a legacy client's query string.
+//
+// The legacy clients build their URLs with fmt.Sprintf and no escaping, so a
+// filter containing a space fails the request and one containing an ampersand
+// injects further parameters. The generic client escapes for itself, which is
+// why only the hand-written commands need this.
+func queryValue(v string) string {
+	return url.QueryEscape(v)
+}
 
 // newCoreTagCommand builds "core tag". Tags have no object in go-anxcloud's
 // generic pkg/apis tree, so these commands drive the legacy core/tags client
@@ -64,7 +75,9 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 			a := tags.NewAPI(c)
 
 			found, err := resource.FetchPages(page, limit, all, func(p int) ([]tags.Summary, error) {
-				return a.List(ctx, p, limit, name, service, organization, order, descending)
+				return a.List(ctx, p, limit,
+					queryValue(name), queryValue(service), queryValue(organization), queryValue(order),
+					descending)
 			})
 			if err != nil {
 				return opts.Fail(fmt.Errorf("listing tags: %w", err))
@@ -221,7 +234,7 @@ func newCoreTagDeleteCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			if err := tags.NewAPI(c).Delete(ctx, args[0], service); err != nil {
+			if err := tags.NewAPI(c).Delete(ctx, args[0], queryValue(service)); err != nil {
 				return opts.Fail(fmt.Errorf("deleting tag %q: %w", args[0], err))
 			}
 

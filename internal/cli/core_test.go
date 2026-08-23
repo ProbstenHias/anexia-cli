@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -384,6 +386,84 @@ func TestCoreServiceList(t *testing.T) {
 
 // TestCoreServiceListAllWalksPages pins that --all works the same on a command
 // written against the legacy client, which reports no page metadata at all.
+// TestListAllKeepsResultsWhenAPageAfterTheLastIsRejected covers both halves of
+// the CLI against an Engine that answers a page past the end with 404 instead
+// of an empty list. Since the walk always asks one page beyond the results,
+// such an Engine would otherwise make --all fail on every complete walk and
+// throw away everything already collected. The registry-driven and the
+// hand-written commands have to agree here, so both are driven the same way.
+func TestListAllKeepsResultsWhenAPageAfterTheLastIsRejected(t *testing.T) {
+	isolate(t)
+
+	tests := []struct {
+		name    string
+		args    []string
+		body    func(page int) string
+		wantIDs []string
+	}{
+		{
+			name: "registry command",
+			args: []string{"core", "location", "list"},
+			body: func(page int) string {
+				return fmt.Sprintf(
+					`{"data":{"page":%d,"limit":1,"data":[{"identifier":"l-%d","code":"ANX0%d"}]}}`,
+					page, page, page)
+			},
+			wantIDs: []string{"l-1", "l-2"},
+		},
+		{
+			name: "legacy command",
+			args: []string{"core", "service", "list"},
+			body: func(page int) string {
+				return fmt.Sprintf(`{"data":[{"identifier":"s-%d","name":"svc-%d"}]}`, page, page)
+			},
+			wantIDs: []string{"s-1", "s-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lastPage := 2
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				page, err := strconv.Atoi(r.URL.Query().Get("page"))
+				require.NoError(t, err)
+
+				w.Header().Set("Content-Type", "application/json")
+
+				if page > lastPage {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":{"code":404,"message":"no such page"}}`))
+
+					return
+				}
+
+				_, _ = w.Write([]byte(tt.body(page)))
+			}))
+			t.Cleanup(srv.Close)
+
+			args := append(slices.Clone(tt.args), "--all", "--limit", "1", "-o", "json",
+				"--token", "tok", "--api-base-url", srv.URL)
+
+			stdout, _, err := run(t, args...)
+
+			require.NoError(t, err, "the walk must end on the rejected page, not fail")
+
+			var got []struct {
+				Identifier string `json:"identifier"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+
+			ids := make([]string, 0, len(got))
+			for _, g := range got {
+				ids = append(ids, g.Identifier)
+			}
+
+			require.Equal(t, tt.wantIDs, ids)
+		})
+	}
+}
+
 func TestCoreServiceListAllWalksPages(t *testing.T) {
 	isolate(t)
 
@@ -505,6 +585,49 @@ func TestCoreTagListPassesFilters(t *testing.T) {
 	require.Contains(t, last.query, "sort_descending=true")
 }
 
+// TestCoreTagListFilterValuesReachTheEngineIntact covers filter values that are
+// not already URL-safe. A user filtering on a tag whose name has a space is
+// ordinary, and a value must arrive as one parameter rather than becoming
+// several, whichever client the command happens to use.
+func TestCoreTagListFilterValuesReachTheEngineIntact(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "a space", value: "my tag", want: "my tag"},
+		{name: "an ampersand", value: "a&b", want: "a&b"},
+		{name: "a value that looks like more parameters", value: "x&limit=1&page=9", want: "x&limit=1&page=9"},
+		{name: "a plus", value: "a+b", want: "a+b"},
+		{name: "a hash", value: "a#b", want: "a#b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+
+			srv, last := server(t, http.StatusOK, `{"data":[]}`)
+
+			_, _, err := run(t, "core", "tag", "list", "--name", tt.value,
+				"--token", "tok", "--api-base-url", srv.URL)
+			require.NoError(t, err)
+
+			// Read the query the way a server does, so an injected extra
+			// parameter shows up as a changed value rather than being missed.
+			values, err := url.ParseQuery(last.query)
+			require.NoError(t, err)
+
+			require.Equal(t, tt.want, values.Get("query"),
+				"the filter must arrive as one value, got query %q", last.query)
+
+			// Paging must still be what the CLI asked for, not something the
+			// filter value smuggled in.
+			require.Equal(t, "1", values.Get("page"))
+			require.Equal(t, "50", values.Get("limit"))
+		})
+	}
+}
+
 func TestCoreTagListEmpty(t *testing.T) {
 	isolate(t)
 	srv, _ := server(t, http.StatusOK, `{"data":[]}`)
@@ -624,6 +747,26 @@ func TestCoreTagDeleteConfirmed(t *testing.T) {
 	require.Equal(t, http.MethodDelete, last.method)
 	require.Contains(t, last.query, "service_identifier=s-1")
 	require.Equal(t, "deleted tag t-1\n", stderr)
+}
+
+// TestCoreTagDeleteEscapesTheServiceIdentifier is the delete-side counterpart:
+// the same legacy client builds this query the same way, so a value needing
+// escaping must not be able to add parameters to a destructive request.
+func TestCoreTagDeleteEscapesTheServiceIdentifier(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusNoContent, "")
+
+	_, _, err := run(t, "core", "tag", "delete", "t-1", "--service", "s 1&x=2", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+
+	values, err := url.ParseQuery(last.query)
+	require.NoError(t, err)
+
+	require.Equal(t, "s 1&x=2", values.Get("service_identifier"),
+		"the identifier must arrive as one value, got query %q", last.query)
+	require.Empty(t, values.Get("x"), "a filter value must not become another parameter")
 }
 
 func TestCoreTagDeleteRequiresService(t *testing.T) {

@@ -2,7 +2,6 @@ package resource
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -74,11 +73,12 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 // does not depend on the server behaving.
 const maxPages = 1000
 
-// pageLimitError reports a walk that hit the backstop. The advice names the
-// ceiling, because "raise --limit" is not actionable to someone already at it.
+// pageLimitError reports a walk that hit the backstop. Narrowing the results
+// always applies, and raising the limit only when there is room to raise it, so
+// the advice is never something the reader has already done.
 func pageLimitError(limit int) error {
 	if limit < MaxLimit {
-		return fmt.Errorf("gave up after %d pages of %d: raise --limit (up to %d) to fetch more per request",
+		return fmt.Errorf("gave up after %d pages of %d: narrow the results with a filter, or raise --limit (up to %d) to fetch more per request",
 			maxPages, limit, MaxLimit)
 	}
 
@@ -122,13 +122,16 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plur
 	items := make([]O, 0, limit)
 
 	for p := page; ; p++ {
+		// Bounds pages of results, leaving room for the one request that
+		// confirms the end, so a result set exactly maxPages long is
+		// returned rather than discarded as a runaway.
+		if p-page > maxPages {
+			return nil, pageLimitError(limit)
+		}
+
 		var info types.PageInfo
 		if err := a.List(ctx, filter, api.Paged(uint(p), uint(limit), &info)); err != nil {
-			// Some endpoints answer a page past the end with a 404 instead of
-			// an empty list. A walk always asks one page beyond the results, so
-			// that is the end rather than a failure. On the first page it is a
-			// real miss and the caller has to hear about it.
-			if all && p > page && errors.Is(err, api.ErrNotFound) {
+			if endOfWalk(err, page, p, all) {
 				break
 			}
 
@@ -148,13 +151,21 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plur
 		if !all || len(pageItems) == 0 {
 			break
 		}
-
-		if p-page+1 >= maxPages {
-			return nil, pageLimitError(limit)
-		}
 	}
 
 	return items, nil
+}
+
+// endOfWalk reports whether a failed page request means the results simply ran
+// out. Some endpoints answer a page past the end with a 404 instead of an empty
+// list, and a walk always asks one page beyond the results, so that is the end
+// rather than a failure. On the page the caller asked for it is a real miss and
+// they have to hear about it.
+//
+// Both paging loops share this, because a walk that dies here on one client and
+// succeeds on the other is the divergence users notice.
+func endOfWalk(err error, page, current int, all bool) bool {
+	return all && current > page && errmap.IsNotFound(err)
 }
 
 // paginates reports whether the object's endpoint pages at all. go-anxcloud
@@ -167,7 +178,10 @@ func paginates(ctx context.Context, obj types.Object) (bool, error) {
 		return true, nil
 	}
 
-	paginated, err := hook.HasPagination(ctx)
+	// The library calls this hook from inside a List, so the operation is on
+	// the context by the time an implementation reads it. None of the objects
+	// in go-anxcloud v0.14.5 do, but one that did would fail here otherwise.
+	paginated, err := hook.HasPagination(types.ContextWithOperation(ctx, types.OperationList))
 	if err != nil {
 		return false, fmt.Errorf("checking paging support: %w", err)
 	}
@@ -228,8 +242,19 @@ func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error
 	items := make([]T, 0, limit)
 
 	for p := page; ; p++ {
+		// Bounds pages of results, leaving room for the one request that
+		// confirms the end, so a result set exactly maxPages long is
+		// returned rather than discarded as a runaway.
+		if p-page > maxPages {
+			return nil, pageLimitError(limit)
+		}
+
 		pageItems, err := get(p)
 		if err != nil {
+			if endOfWalk(err, page, p, all) {
+				return items, nil
+			}
+
 			return nil, err
 		}
 
@@ -237,10 +262,6 @@ func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error
 
 		if !all || len(pageItems) == 0 {
 			return items, nil
-		}
-
-		if p-page+1 >= maxPages {
-			return nil, pageLimitError(limit)
 		}
 	}
 }

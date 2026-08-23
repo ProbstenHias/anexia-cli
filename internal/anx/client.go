@@ -92,7 +92,7 @@ type errorBodyTransport struct{}
 
 func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := http.DefaultTransport.RoundTrip(req)
-	if err != nil || res.StatusCode < http.StatusBadRequest {
+	if err != nil || !failed(res.StatusCode) {
 		return res, err
 	}
 
@@ -103,7 +103,7 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	_ = res.Body.Close()
 
-	if !json.Valid(body) {
+	if !decodable(body) {
 		body, err = json.Marshal(map[string]any{
 			"error": map[string]any{"code": res.StatusCode, "message": res.Status},
 		})
@@ -116,6 +116,24 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res.ContentLength = int64(len(body))
 
 	return res, nil
+}
+
+// failed mirrors the range go-anxcloud treats as an error response, so the
+// repair covers every status that would otherwise reach its error parsing.
+func failed(status int) bool {
+	return status < http.StatusOK || status >= http.StatusMultipleChoices
+}
+
+// decodable reports whether the library will get a status out of this body.
+//
+// Testing that the body is valid JSON is not enough: the library decodes it
+// into a fixed struct, so a shape that parses but does not fit, such as an
+// error field holding a string or a code holding one, still leaves it with
+// nothing. Asking the same question it asks is the only reliable test.
+func decodable(body []byte) bool {
+	var parsed client.ResponseError
+
+	return json.Unmarshal(body, &parsed) == nil
 }
 
 // NewAPI returns the generic Anexia Engine client, which serves every object

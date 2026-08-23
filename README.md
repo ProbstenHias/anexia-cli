@@ -75,10 +75,10 @@ anexia core resource tag add <resource-id> production staging
 anexia core tag delete <tag-id> --service <service-id> --yes
 ```
 
-Every collection list takes `--page`, `--limit` and `--all`. Every destructive command asks for
-confirmation unless you pass `--yes`. Failures exit with a distinct code per error class: 2 for
-usage mistakes, 3 for authentication, 4 for not found, 5 for timeouts, 6 for rate limits, 7 for a
-declined confirmation.
+Every collection list takes `--page`, `--limit` and `--all`. Every `delete` asks for confirmation
+unless you pass `--yes`; `tag remove` does not, because reattaching a tag costs nothing. Failures
+exit with a distinct code per error class: 2 for usage mistakes, 3 for authentication, 4 for not
+found, 5 for timeouts, 6 for rate limits, 7 for a declined confirmation.
 
 ### Global flags
 
@@ -151,21 +151,22 @@ returns with the `vsphere` group.
 
 ## Feature coverage
 
-`[x]` ships, `[ ]` is planned, and `-` means the operation does not exist in the Engine, so the
-CLI will never grow the verb. A `~` marks an operation the Engine may well have but go-anxcloud
-does not implement yet, which the CLI cannot reach until the library does.
+`[x]` ships and `[ ]` is planned. A `-` means the CLI will not grow the verb, because go-anxcloud
+cannot reach it: either the library says the Engine has no such operation, or it has not
+implemented one. The distinction matters to whoever picks the work up, so the tables say which
+when the library says which, but a `-` is never evidence about the Engine on its own.
 
 Only the `core` group below is implemented. Everything after it is a roadmap of what the library
-can reach, checked against go-anxcloud v0.14.5 but not against the Engine itself.
+can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 
 ### core
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `core location` | [x] | [x] | - | - | - | |
-| `core resource` | [x] | [x] | - | ~ | ~ | `tag list`/`add`/`remove` [x] |
+| `core location` | [x] | [x] | - | - | - | read-only in the Engine |
+| `core resource` | [x] | [x] | - | - | - | update and delete unimplemented in the library |
 | `core tag` | [x] | [x] | [x] | - | [x] | |
-| `core service` | [x] | - | - | - | - | |
+| `core service` | [x] | - | - | - | - | the library implements only list |
 
 ### network
 
@@ -230,7 +231,7 @@ the CLI is not settled yet.
 | `frontier api` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `frontier endpoint` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `frontier action` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `frontier deployment` | [ ] | [ ] | [ ] | ~ | [ ] | create is a deploy action |
+| `frontier deployment` | [ ] | [ ] | [ ] | [ ] | [ ] | create is a deploy action |
 
 ### storage
 
@@ -244,9 +245,8 @@ the CLI is not settled yet.
 | `storage endpoint` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage backend` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 
-The object storage API is marked beta in go-anxcloud. The write verbs on `region`, `endpoint` and
-`backend` are unconfirmed: the library defines no write handling for them, which may mean they are
-read-only.
+The object storage API is marked beta in go-anxcloud, and `region`, `endpoint` and `backend`
+handle updates differently from the other four, so their write verbs may not all work out.
 
 ### Cross-cutting
 

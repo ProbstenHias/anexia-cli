@@ -73,7 +73,7 @@ func ExitCode(err error) int {
 		return ExitTimeout
 	case isRateLimited(err):
 		return ExitRateLimited
-	case errors.Is(err, api.ErrNotFound), hasStatus(err, http.StatusNotFound):
+	case IsNotFound(err):
 		return ExitNotFound
 	case errors.Is(err, ErrAuth), errors.Is(err, api.ErrAccessDenied),
 		hasStatus(err, http.StatusUnauthorized), hasStatus(err, http.StatusForbidden):
@@ -81,6 +81,15 @@ func ExitCode(err error) int {
 	default:
 		return ExitError
 	}
+}
+
+// IsNotFound reports whether err is the Engine saying the thing is not there.
+//
+// The two go-anxcloud clients disagree on the shape: the generic one wraps
+// api.ErrNotFound, the legacy one only carries the status. Callers that branch
+// on not-found have to work on both, so they share this.
+func IsNotFound(err error) bool {
+	return errors.Is(err, api.ErrNotFound) || hasStatus(err, http.StatusNotFound)
 }
 
 // isRateLimited reports whether err was caused by Engine throttling.
@@ -129,6 +138,10 @@ func legacyStatus(err *client.ResponseError) int {
 // Engine's own wording is not actionable on its own. It classifies through
 // ExitCode so a message and an exit code can never disagree.
 func Message(err error) string {
+	if err == nil {
+		return ""
+	}
+
 	text := readable(err)
 
 	switch ExitCode(err) {
@@ -156,19 +169,35 @@ func readable(err error) string {
 	return text
 }
 
+// maxErrorDepth bounds the error tree walk, which joined errors make branch
+// rather than recurse in a line. Nothing the CLI builds comes close, so this
+// only exists so a pathological chain degrades the message instead of the
+// process. It is not protection against a cyclic chain: the standard library's
+// own errors.Is loops forever on one, so nothing downstream would survive it
+// either.
+const maxErrorDepth = 100
+
 // responseErrors collects every legacy Engine error in the chain, outermost
 // first. Joined errors branch, so the whole tree is walked rather than the
 // single Unwrap chain errors.As follows.
 func responseErrors(err error) []*client.ResponseError {
+	return collectResponseErrors(err, maxErrorDepth)
+}
+
+func collectResponseErrors(err error, depth int) []*client.ResponseError {
+	if err == nil || depth <= 0 {
+		return nil
+	}
+
 	var found []*client.ResponseError
 
 	switch e := err.(type) { //nolint:errorlint // walking the tree needs the concrete shapes
 	case interface{ Unwrap() []error }:
 		for _, wrapped := range e.Unwrap() {
-			found = append(found, responseErrors(wrapped)...)
+			found = append(found, collectResponseErrors(wrapped, depth-1)...)
 		}
 	case interface{ Unwrap() error }:
-		found = responseErrors(e.Unwrap())
+		found = collectResponseErrors(e.Unwrap(), depth-1)
 	}
 
 	var responseErr *client.ResponseError

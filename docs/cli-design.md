@@ -108,10 +108,12 @@ number, the applied page size, and the total page count are each untrustworthy o
 Every one of those failures is silent and exits 0, which is worse than the runaway they were
 meant to prevent. The cost of the empty-page rule is one extra request per walk.
 
-Two consequences follow. An Engine that answers the page after the last one with a 404 instead of
-an empty list ends the walk rather than losing it, because that extra request now happens on every
-complete walk. And a resource go-anxcloud marks as not paginating is fetched exactly once, with
-`--page` beyond the first rejected as a usage mistake instead of silently returning page one.
+Three consequences follow. An Engine that answers the page after the last one with a 404 instead
+of an empty list ends the walk on either client rather than losing it, because that extra request
+now happens on every complete walk. A resource go-anxcloud marks as not paginating is fetched
+exactly once, with `--page` beyond the first rejected as a usage mistake instead of silently
+returning page one. And the thousand-page backstop bounds pages of results rather than requests,
+so a result set exactly that long is returned instead of reported as a runaway.
 
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
@@ -209,8 +211,15 @@ Anything the user got wrong about the invocation is prefixed `invalid usage:` in
 what makes it exit 2:
 
 ```
-anexia: invalid usage: unknown command "location" for "anexia"
+anexia: invalid usage: unknown command "lcoation" for "anexia core"
 anexia: invalid usage: --limit 0 must be between 1 and 1000
+```
+
+A name that used to work gets its replacement rather than that message. The commands are hidden,
+so they do not show up in help or completion as if they still worked:
+
+```
+anexia: invalid usage: "location" has moved, use "anexia core location list" instead
 ```
 
 That covers unknown commands, unknown flags, wrong argument counts, an unsupported `--output`,
@@ -285,8 +294,14 @@ the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchP
 the object, the hand-written command is replaced by a `Spec` and the behavior does not change.
 
 Every divergence between the two halves that users could observe has been a bug so far: a missing
-plural alias, an exit code that depended on the client, a `--all` flag present on one half only,
-and a `--all` walk that truncated on one half only. Sharing a helper is how that stops happening.
+plural alias, an exit code that depended on the client, a `--all` flag present on one half only, a
+`--all` walk that truncated on one half only, and a filter value with a space in it that worked on
+one half and returned a 400 on the other. Sharing a helper is how that stops happening.
+
+That last one needs the hand-written half to do something the registry does not. The legacy clients
+build their URLs by interpolating filter values into a format string, so the CLI escapes them
+before handing them over. Skipping it does not just break a value with a space: a value containing
+an ampersand becomes extra query parameters.
 
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents
@@ -311,8 +326,10 @@ reason. It has to reach the behavior: the error-shape and output-format checks d
 with arguments derived from its own `Args` validator and flag set, and fail if a command never got
 past parsing, because a test that only ever observes `invalid usage:` proves nothing. And it has to
 check the value, not just its presence: asserting a noun has some alias passes on the wrong alias,
-so the alias is resolved through the tree instead. Both of those were live defects here, and every
-check in the file has been confirmed to fail against a deliberate violation.
+and so does resolving that alias through the tree, since cobra resolves whatever alias it was
+given. Only comparing it against the noun catches a typo. Both of those were live defects here, and
+every check in the file has been confirmed to fail against a deliberate violation, which is the
+third thing: a check nobody has seen fail is a guess.
 
 Two rules are checked by targeted tests rather than by walking the tree, because they need a
 server to observe: `--all` requesting every page exactly once from any starting page, and

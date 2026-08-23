@@ -386,6 +386,21 @@ func TestNounsAcceptTheirPlural(t *testing.T) {
 	}
 }
 
+// TestDeleteAcceptsDestroy pins the one documented verb alias. The design doc
+// promises it, and without a test the alias can be dropped without notice.
+func TestDeleteAcceptsDestroy(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusNoContent, "")
+
+	_, stderr, err := run(t, "core", "tag", "destroy", "t-1", "--service", "s-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, last.method)
+	require.Equal(t, "deleted tag t-1\n", stderr)
+}
+
 func TestConfigPath(t *testing.T) {
 	path := isolate(t)
 

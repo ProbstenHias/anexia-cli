@@ -73,6 +73,20 @@ func singular(name string) bool {
 	return !strings.HasSuffix(name, "s") || strings.HasSuffix(name, "ss")
 }
 
+// plural reports whether alias is the plural of noun. English is only handled
+// as far as the Engine's own vocabulary needs: a trailing "s", or "es" after a
+// sibilant, which covers "address" and "prefix". An irregular plural has to be
+// added here deliberately, which is the point.
+func plural(noun, alias string) bool {
+	for _, suffix := range []string{"s", "x", "z", "ch", "sh"} {
+		if strings.HasSuffix(noun, suffix) {
+			return alias == noun+"es"
+		}
+	}
+
+	return alias == noun+"s"
+}
+
 // walk visits cmd and every descendant, skipping cobra's completion subtree
 // and any hidden command.
 //
@@ -140,6 +154,8 @@ func TestConformanceLeavesUseKnownVerbs(t *testing.T) {
 func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	t.Parallel()
 
+	checked := 0
+
 	for _, cmd := range commands(t) {
 		if cmd.HasSubCommands() {
 			continue
@@ -148,8 +164,14 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 		for _, alias := range cmd.Aliases {
 			assert.True(t, verbs[alias],
 				"%s: alias %q is not a known verb, add it to the conformance list deliberately", path(cmd), alias)
+
+			checked++
 		}
 	}
+
+	// Without this the test passes when the tree has no leaf alias at all,
+	// which would make it look like the rule is enforced when it is not.
+	assert.Positive(t, checked, "the tree should have leaf aliases to check")
 }
 
 func TestConformanceNounsAreSingular(t *testing.T) {
@@ -196,6 +218,12 @@ func TestConformanceNounsCarryAPluralAlias(t *testing.T) {
 			require.NoError(t, err, "%s: alias %q does not resolve", path(cmd), alias)
 			assert.Same(t, cmd, resolved, "%s: alias %q resolves to %s instead", path(cmd), alias, path(resolved))
 
+			// Resolution alone proves nothing: cobra matches whatever alias
+			// is registered, so any string would resolve. The alias has to
+			// actually read as the plural of the noun.
+			assert.True(t, plural(cmd.Name(), alias),
+				"%s: alias %q is not the plural of %q", path(cmd), alias, cmd.Name())
+
 			checked++
 		}
 	}
@@ -208,16 +236,24 @@ func TestConformanceNounsCarryAPluralAlias(t *testing.T) {
 func TestConformanceRelationListsOmitPagingFlags(t *testing.T) {
 	t.Parallel()
 
+	checked := 0
+
 	for _, cmd := range commands(t) {
 		if cmd.Name() != "list" || !takesPositionalArgs(cmd) {
 			continue
 		}
+
+		checked++
 
 		for _, name := range []string{"page", "limit", "all"} {
 			assert.Nil(t, cmd.Flags().Lookup(name),
 				"%s: a relation list has nothing to page over, so --%s must not exist", path(cmd), name)
 		}
 	}
+
+	// Without this a regression in takesPositionalArgs would empty the loop
+	// and silently disable the rule.
+	assert.Positive(t, checked, "the tree should have relation lists to check")
 }
 
 // invocation builds a command line that satisfies cmd's own argument and flag
@@ -227,7 +263,22 @@ func TestConformanceRelationListsOmitPagingFlags(t *testing.T) {
 func invocation(cmd *cobra.Command) []string {
 	args := strings.Fields(strings.TrimPrefix(cmd.CommandPath(), "anexia "))
 
+	// A command without a validator accepts any count, including zero, so
+	// probing would pick zero and the command would then index the arguments
+	// it documents and panic, taking the whole test binary with it. Use what
+	// Use documents instead, and let the test that owns that rule report the
+	// missing validator.
+	if cmd.Args == nil {
+		for range strings.Count(cmd.Use, "<") {
+			args = append(args, "placeholder")
+		}
+	}
+
 	for n := range 4 {
+		if cmd.Args == nil {
+			break
+		}
+
 		if cmd.ValidateArgs(make([]string, n)) == nil {
 			for range n {
 				args = append(args, "placeholder")
@@ -345,12 +396,12 @@ func TestConformanceLeavesValidateArgumentCount(t *testing.T) {
 // argument, probing counts because validators such as ExactArgs(2) reject a
 // single argument.
 //
-// A command without a validator is reported as taking none, so the missing
-// validator fails only the test that owns that rule instead of every test
-// built on this helper.
+// A command without a validator is judged by what Use documents, so the
+// missing validator is reported by the test that owns that rule rather than
+// turning into a second, misleading failure about undocumented arguments.
 func takesPositionalArgs(cmd *cobra.Command) bool {
 	if cmd.Args == nil {
-		return false
+		return strings.Contains(cmd.Use, "<")
 	}
 
 	for n := 1; n <= 3; n++ {
@@ -434,7 +485,10 @@ func TestConformanceNoCommandShadowsAGlobalFlag(t *testing.T) {
 
 // TestConformanceEveryEngineCommandSupportsEveryOutputFormat walks every leaf
 // that talks to the Engine, because a command that renders nothing can still
-// accept -o and ignore it, which is only visible by trying each one.
+// accept a bogus -o and ignore it, which is only visible by trying each one.
+//
+// This proves acceptance and rejection, not that a command renders in the
+// format it accepted. Rendering is asserted per command in core_test.go.
 func TestConformanceEveryEngineCommandSupportsEveryOutputFormat(t *testing.T) {
 	// isolate sets environment variables, so this test cannot be parallel.
 	isolate(t)

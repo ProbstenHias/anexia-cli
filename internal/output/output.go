@@ -122,19 +122,23 @@ func (w *Writer) tsv(headers []string, rows [][]string) error {
 	return nil
 }
 
-// flatten joins fields with tabs after replacing any tab or line break inside
-// a field with a space. The Engine does not forbid either in a name, and one
-// arriving unescaped would add columns and rows to the output, silently
+// flatten joins fields with tabs after replacing every byte that ends a cell
+// or a line with a space. The Engine does not forbid any of them in a name, and
+// one arriving unescaped would add columns and rows to the output, silently
 // shifting every field after it for tools reading the stream.
+//
+// The set is tabwriter's, not just the obvious one: it ends a cell on a tab or
+// a vertical tab, and a line on a newline or a form feed.
 func flatten(fields []string) string {
 	clean := make([]string, len(fields))
 	for i, f := range fields {
 		clean[i] = strings.Map(func(r rune) rune {
-			if r == '\t' || r == '\n' || r == '\r' {
+			switch r {
+			case '\t', '\v', '\n', '\f', '\r':
 				return ' '
+			default:
+				return r
 			}
-
-			return r
 		}, f)
 	}
 
@@ -207,15 +211,49 @@ func numbersAsScalars(v any) any {
 
 		return t
 	case json.Number:
-		if i, err := strconv.ParseInt(t.String(), 10, 64); err == nil {
-			return i
-		}
-
-		// Too large for an int64, or fractional: emit the digits verbatim
-		// as an untagged scalar so no precision is lost on the way out and
-		// the reader's resolver picks the type it would have picked anyway.
-		return &yaml.Node{Kind: yaml.ScalarNode, Value: t.String()}
+		return numberScalar(t)
 	default:
 		return v
 	}
+}
+
+// numberScalar renders one JSON number so a YAML reader sees a number.
+//
+// An integer that fits becomes an int64 and yaml.v3 handles it. Everything else
+// has to be emitted as a scalar to keep its digits, and there the spelling
+// matters: YAML 1.1, which is what most readers outside Go implement, only
+// resolves an exponent form as a float when it carries a decimal point and a
+// signed exponent, so JSON's own "1e5" would arrive as a string. Reformatting
+// through a float fixes the spelling, and anything too large for that keeps its
+// digits verbatim, which is the one case where precision beats typing.
+func numberScalar(n json.Number) any {
+	text := n.String()
+
+	if i, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return i
+	}
+
+	if !strings.ContainsAny(text, "eE") {
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+	}
+
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: exponentForm(f)}
+	}
+
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+}
+
+// exponentForm spells a float the way a YAML 1.1 resolver recognizes it, which
+// needs a decimal point in the mantissa as well as a signed exponent: a reader
+// handed "1e+05" produces the string, handed "1.0e+05" produces the number.
+func exponentForm(f float64) string {
+	text := strconv.FormatFloat(f, 'e', -1, 64)
+
+	mantissa, exponent, found := strings.Cut(text, "e")
+	if !found || strings.Contains(mantissa, ".") {
+		return text
+	}
+
+	return mantissa + ".0e" + exponent
 }

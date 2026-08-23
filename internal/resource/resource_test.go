@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.anx.io/go-anxcloud/pkg/api"
+	"go.anx.io/go-anxcloud/pkg/api/types"
 	corev1 "go.anx.io/go-anxcloud/pkg/apis/core/v1"
 
 	"github.com/ProbstenHias/anexia-cli/internal/anx"
@@ -77,7 +78,14 @@ func (u *unpaged) GetIdentifier(context.Context) (string, error) {
 	return u.Identifier, nil
 }
 
-func (u *unpaged) HasPagination(context.Context) (bool, error) {
+// HasPagination reads the operation off the context, the way every other
+// go-anxcloud object hook does. The library sets it before calling this, so a
+// caller asking the question itself has to set it too.
+func (u *unpaged) HasPagination(ctx context.Context) (bool, error) {
+	if _, err := types.OperationFromContext(ctx); err != nil {
+		return false, err
+	}
+
 	return false, nil
 }
 
@@ -310,17 +318,98 @@ func TestListRendersTable(t *testing.T) {
 	assert.Equal(t, "limit=50&page=1", (*seen)[0].query)
 }
 
-func TestListPassesFilters(t *testing.T) {
+// resourceSpec is a Spec over an object whose filter reaches the wire.
+// corev1.Resource turns its first tag into a tag_name query parameter, which
+// corev1.Location has no equivalent of on a list.
+func resourceSpec() resource.Spec[corev1.Resource, *corev1.Resource] {
+	return resource.Spec[corev1.Resource, *corev1.Resource]{
+		Noun:  "resource",
+		Short: "Work with resources",
+		List:  true,
+		Get:   true,
+		Identify: func(r *corev1.Resource, id string) {
+			r.Identifier = id
+		},
+		Filters: func(flags *pflag.FlagSet) func(*corev1.Resource) {
+			tag := flags.String("tag", "", "filter by tag")
+
+			return func(r *corev1.Resource) {
+				if *tag != "" {
+					r.Tags = []string{*tag}
+				}
+			}
+		},
+		Columns: []resource.Column[corev1.Resource]{
+			{Name: "identifier", Value: func(r *corev1.Resource) string { return r.Identifier }},
+		},
+	}
+}
+
+// TestListPassesPagingFlags pins the paging flags reaching the wire. The
+// filter value is checked separately, because corev1.Location does not send
+// one on a list and so cannot show a filter arriving.
+func TestListPassesPagingFlags(t *testing.T) {
 	t.Parallel()
 
 	e, seen := serve(t, onePage(t))
 
-	_, stderrText, err := exec(resource.Command(e, locationSpec()), "list", "--code", "ANX04", "--page", "2", "--limit", "5")
+	_, stderrText, err := exec(resource.Command(e, locationSpec()), "list", "--page", "2", "--limit", "5")
 
 	require.NoError(t, err)
 	assert.Contains(t, stderrText, "no locations found")
 	require.Len(t, *seen, 1)
 	assert.Equal(t, "limit=5&page=2", (*seen)[0].query)
+}
+
+// TestListPassesFiltersToTheEngine covers the filter mechanism itself, using an
+// object that actually turns a field into a query parameter. corev1.Resource
+// sends its first tag as tag_name, so a filter that never got applied, or got
+// applied to the wrong request, is visible on the wire.
+func TestListPassesFiltersToTheEngine(t *testing.T) {
+	t.Parallel()
+
+	e, seen := serve(t, `{"data":{"page":1,"total_pages":1,"total_items":0,"limit":50,"data":[]}}`)
+
+	_, _, err := exec(resource.Command(e, resourceSpec()), "list", "--tag", "production")
+
+	require.NoError(t, err)
+	require.Len(t, *seen, 1)
+
+	values, err := url.ParseQuery((*seen)[0].query)
+	require.NoError(t, err)
+	assert.Equal(t, "production", values.Get("tag_name"))
+}
+
+// TestListAppliesFiltersToEveryPage guards the filter surviving a walk: the
+// filter object is reused across pages, so a page fetched without it would
+// return unfiltered results while looking fine.
+func TestListAppliesFiltersToEveryPage(t *testing.T) {
+	t.Parallel()
+
+	var tags []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tags = append(tags, r.URL.Query().Get("tag_name"))
+
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		body := `{"data":{"page":1,"limit":1,"data":[{"identifier":"r-1"}]}}`
+		if page > 2 {
+			body = `{"data":{"page":1,"limit":1,"data":[]}}`
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
+
+	_, _, err := exec(resource.Command(e, resourceSpec()), "list", "--all", "--limit", "1", "--tag", "production")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"production", "production", "production"}, tags)
 }
 
 func TestListRequestsTheAskedForPage(t *testing.T) {
@@ -733,8 +822,42 @@ func TestListAllGivesUpOnAnEndlessEngine(t *testing.T) {
 	// The advice has to name the ceiling, because a user already at --limit
 	// 1000 cannot act on "raise --limit".
 	assert.Contains(t, err.Error(), "gave up after 1000 pages")
+	assert.Contains(t, err.Error(), "narrow the results with a filter")
 	assert.Contains(t, err.Error(), "up to 1000")
-	assert.Equal(t, 1000, requests)
+	// maxPages pages of results, plus the one request that would have seen
+	// the end if there had been one.
+	assert.Equal(t, 1001, requests)
+}
+
+// TestListAllReturnsAResultThatFillsExactlyTheBackstop covers the boundary: a
+// result set that happens to be exactly as long as the walk is allowed to go is
+// a legitimate answer, not a runaway, and returning nothing would discard every
+// page already collected.
+func TestListAllReturnsAResultThatFillsExactlyTheBackstop(t *testing.T) {
+	t.Parallel()
+
+	const lastPage = 1000
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		objects := []corev1.Location{{Identifier: fmt.Sprintf("id-p%d", page)}}
+		if page > lastPage {
+			objects = nil
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(paged(t, page, 0, 1, objects...)))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatJSON}
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+
+	require.NoError(t, err)
+	assert.Len(t, identifiers(t, stdout), lastPage)
 }
 
 func TestListWithoutAllFetchesOnePage(t *testing.T) {
@@ -1009,8 +1132,9 @@ func TestFetchPagesGivesUpOnAnEndlessEngine(t *testing.T) {
 	})
 
 	require.ErrorContains(t, err, "gave up after 1000 pages")
+	require.ErrorContains(t, err, "narrow the results with a filter")
 	require.ErrorContains(t, err, "up to 1000")
-	assert.Equal(t, 1000, calls)
+	assert.Equal(t, 1001, calls)
 
 	// At the ceiling the advice cannot be "raise --limit", so it has to
 	// suggest something the user can actually do.
