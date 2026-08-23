@@ -170,39 +170,82 @@ func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
 func TestNewClientKeepsTheEngineWording(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"service not found"}}`))
-	}))
-	defer srv.Close()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "engine error body",
+			body: `{"error":{"code":404,"message":"service not found"}}`,
+		},
+		{
+			// A proxy that appends to the body it forwards. The library
+			// decodes with a streaming decoder, which stops at the end of the
+			// first value, so it still reads the Engine's message here and
+			// the transport must not decide otherwise.
+			name: "engine error body with trailing bytes",
+			body: `{"error":{"code":404,"message":"service not found"}}` + "\n<!-- proxy -->",
+		},
+	}
 
-	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err = service.NewAPI(c).List(context.Background(), 1, 1)
-	require.Error(t, err)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
 
-	var responseErr *client.ResponseError
-	require.ErrorAs(t, err, &responseErr)
-	require.Equal(t, "service not found", responseErr.ErrorData.Message)
+			c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+			require.NoError(t, err)
+
+			_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+			require.Error(t, err)
+
+			var responseErr *client.ResponseError
+			require.ErrorAs(t, err, &responseErr)
+			require.Equal(t, "service not found", responseErr.ErrorData.Message)
+		})
+	}
 }
 
 // TestNewClientLeavesSuccessfulResponsesAlone guards the transport against
 // touching the responses it has no business rewriting.
+//
+// The second body matters: its error field holds a string, which is the shape
+// the transport refuses to decode. If the status check ever stopped separating
+// success from failure, that body would be replaced and the list would come
+// back silently empty instead of erroring.
 func TestNewClientLeavesSuccessfulResponsesAlone(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"identifier":"s-1","name":"svc"}]}`))
-	}))
-	defer srv.Close()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "object body", body: `{"data":[{"identifier":"s-1","name":"svc"}]}`},
+		{name: "body the transport could not decode", body: `{"error":"none","data":[{"identifier":"s-1","name":"svc"}]}`},
+	}
 
-	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	found, err := service.NewAPI(c).List(context.Background(), 1, 1)
-	require.NoError(t, err)
-	require.Len(t, found, 1)
-	require.Equal(t, "svc", found[0].Name)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+			require.NoError(t, err)
+
+			found, err := service.NewAPI(c).List(context.Background(), 1, 1)
+			require.NoError(t, err)
+			require.Len(t, found, 1)
+			require.Equal(t, "svc", found[0].Name)
+		})
+	}
 }

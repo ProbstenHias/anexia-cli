@@ -829,6 +829,63 @@ func TestListAllGivesUpOnAnEndlessEngine(t *testing.T) {
 	assert.Equal(t, 1001, requests)
 }
 
+// TestListAllSaysSoWhenAWalkEndsOnANotFound covers the one case where the walk
+// cannot tell "the results ran out" from "something went wrong": an Engine that
+// answers a page past the end with a 404 looks exactly like a proxy returning a
+// transient 404 mid-walk, or a parent object deleted while the walk ran.
+//
+// Ending the walk is right, because refusing to would break every Engine of the
+// first kind. Ending it silently is not: the user gets fewer results than exist
+// and a successful exit. The note goes to stderr so a pipeline still reads clean
+// data on stdout.
+func TestListAllSaysSoWhenAWalkEndsOnANotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if page > 1 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":404,"message":"no such page"}}`))
+
+			return
+		}
+
+		_, _ = w.Write([]byte(paged(t, 1, 0, 1, corev1.Location{Identifier: "id-1"})))
+	}))
+	t.Cleanup(srv.Close)
+
+	e := &env{baseURL: srv.URL, format: output.FormatTable}
+
+	stdout, stderrText, err := exec(resource.Command(e, locationSpec()), "list", "--all", "--limit", "1")
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "id-1")
+	assert.Contains(t, stderrText, "stopped at page 2")
+}
+
+// TestListReportsAPageThatFailsToDecode covers a page the client cannot read.
+// Reporting it matters more than it sounds: without the check the page is
+// dropped and the walk carries on, so the command exits 0 having quietly
+// skipped part of the results.
+func TestListReportsAPageThatFailsToDecode(t *testing.T) {
+	t.Parallel()
+
+	// lat is a *string in corev1.Location, so a number there is a type
+	// mismatch the decoder rejects.
+	e, _ := serve(t, `{"data":{"page":1,"total_pages":1,"total_items":1,"limit":50,
+	  "data":[{"identifier":"id-1","lat":12345}]}}`)
+
+	stdout, _, err := exec(resource.Command(e, locationSpec()), "list")
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "listing locations")
+	assert.Empty(t, stdout)
+}
+
 // TestListAllReturnsAResultThatFillsExactlyTheBackstop covers the boundary: a
 // result set that happens to be exactly as long as the walk is allowed to go is
 // a legitimate answer, not a runaway, and returning nothing would discard every
@@ -1064,7 +1121,7 @@ func TestFetchPagesWalksUntilAnEmptyPage(t *testing.T) {
 			var seen []int
 
 			// Two items per page, one on the short third page, none after.
-			items, err := resource.FetchPages(tt.startPage, 2, tt.all, func(p int) ([]string, error) {
+			items, err := resource.FetchPages(io.Discard, "things", tt.startPage, 2, tt.all, func(p int) ([]string, error) {
 				seen = append(seen, p)
 
 				switch {
@@ -1093,7 +1150,7 @@ func TestFetchPagesWalksPagesCappedBelowTheLimit(t *testing.T) {
 
 	var seen []int
 
-	items, err := resource.FetchPages(1, 50, true, func(p int) ([]string, error) {
+	items, err := resource.FetchPages(io.Discard, "things", 1, 50, true, func(p int) ([]string, error) {
 		seen = append(seen, p)
 
 		if p > 3 {
@@ -1111,7 +1168,7 @@ func TestFetchPagesWalksPagesCappedBelowTheLimit(t *testing.T) {
 func TestFetchPagesReportsFailure(t *testing.T) {
 	t.Parallel()
 
-	_, err := resource.FetchPages(1, 2, true, func(int) ([]string, error) {
+	_, err := resource.FetchPages(io.Discard, "things", 1, 2, true, func(int) ([]string, error) {
 		return nil, errors.New("boom")
 	})
 
@@ -1125,7 +1182,7 @@ func TestFetchPagesGivesUpOnAnEndlessEngine(t *testing.T) {
 
 	calls := 0
 
-	_, err := resource.FetchPages(1, 1, true, func(int) ([]string, error) {
+	_, err := resource.FetchPages(io.Discard, "things", 1, 1, true, func(int) ([]string, error) {
 		calls++
 
 		return []string{"always"}, nil
@@ -1138,7 +1195,7 @@ func TestFetchPagesGivesUpOnAnEndlessEngine(t *testing.T) {
 
 	// At the ceiling the advice cannot be "raise --limit", so it has to
 	// suggest something the user can actually do.
-	_, err = resource.FetchPages(1, resource.MaxLimit, true, func(int) ([]string, error) {
+	_, err = resource.FetchPages(io.Discard, "things", 1, resource.MaxLimit, true, func(int) ([]string, error) {
 		return []string{"always"}, nil
 	})
 

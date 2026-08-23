@@ -65,8 +65,9 @@ f6f2d1c4f0f14e2b9a3c7d5e2b1a4c33   ANX21   DE, Frankfurt, Equinix   DE        FR
 ```
 
 Tables go to stdout; notes like `no locations found` go to stderr, so piping stays clean. `-o json`
-and `-o yaml` print the raw Engine objects, `-o tsv` prints tab-separated columns for `cut` and
-`awk`, and `--no-headers` drops the header row from `table` and `tsv`.
+and `-o yaml` print the Engine objects with the API's own field names, `-o tsv` prints
+tab-separated columns for `cut` and `awk`, and `--no-headers` drops the header row from `table` and
+`tsv`.
 
 ```sh
 anexia core location list -o tsv --no-headers | cut -f2

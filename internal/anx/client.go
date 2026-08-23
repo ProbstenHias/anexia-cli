@@ -129,11 +129,14 @@ func failed(status int) bool {
 // Testing that the body is valid JSON is not enough: the library decodes it
 // into a fixed struct, so a shape that parses but does not fit, such as an
 // error field holding a string or a code holding one, still leaves it with
-// nothing. Asking the same question it asks is the only reliable test.
+// nothing. Asking the same question it asks is the only reliable test, and that
+// includes asking it the same way: a streaming decoder stops at the end of the
+// first value, so a proxy appending to the body it forwards does not stop the
+// library reading the Engine's message out of it.
 func decodable(body []byte) bool {
 	var parsed client.ResponseError
 
-	return json.Unmarshal(body, &parsed) == nil
+	return json.NewDecoder(bytes.NewReader(body)).Decode(&parsed) == nil
 }
 
 // NewAPI returns the generic Anexia Engine client, which serves every object

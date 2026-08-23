@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -57,7 +58,7 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 			applyFilters(&filter)
 		}
 
-		items, err := fetch(ctx, a, PO(&filter), spec.plural(), page, limit, all)
+		items, err := fetch(ctx, a, cmd.ErrOrStderr(), PO(&filter), spec.plural(), page, limit, all)
 		if err != nil {
 			return env.Fail(fmt.Errorf("listing %s: %w", spec.plural(), err))
 		}
@@ -102,7 +103,7 @@ func pageLimitError(limit int) error {
 // truth whenever the Engine caps its page size lower. Each of those has already
 // cost a release a silent truncation, so the page contents are the only signal
 // left worth acting on.
-func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plural string, page, limit int, all bool) ([]O, error) {
+func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, notices io.Writer, filter PO, plural string, page, limit int, all bool) ([]O, error) {
 	paginated, err := paginates(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -132,6 +133,8 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plur
 		var info types.PageInfo
 		if err := a.List(ctx, filter, api.Paged(uint(p), uint(limit), &info)); err != nil {
 			if endOfWalk(err, page, p, all) {
+				noteIncompleteWalk(notices, plural, p)
+
 				break
 			}
 
@@ -154,6 +157,24 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, filter PO, plur
 	}
 
 	return items, nil
+}
+
+// noteIncompleteWalk says that a walk ended on a not-found rather than on an
+// empty page.
+//
+// Ending there is the right call, since an Engine that answers a page past the
+// end with a 404 is otherwise unwalkable, but the same 404 could be a parent
+// object deleted mid-walk or a proxy having a bad moment. Those return fewer
+// results than exist, so saying nothing would make partial output look
+// complete. It goes to stderr, leaving stdout clean for a pipeline.
+func noteIncompleteWalk(notices io.Writer, plural string, page int) {
+	if notices == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintf(notices,
+		"warning: stopped at page %d, which the Engine reports does not exist; %s may be missing\n",
+		page, plural)
 }
 
 // endOfWalk reports whether a failed page request means the results simply ran
@@ -238,7 +259,7 @@ func RegisterPagingFlags(flags *pflag.FlagSet, page, limit *int, all *bool, plur
 // is; maxPages backstops an Engine that never produces one. Stopping on a page
 // merely shorter than the limit would truncate the walk against an Engine that
 // caps page size below --limit, which the default limit of 50 makes likely.
-func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error)) ([]T, error) {
+func FetchPages[T any](notices io.Writer, plural string, page, limit int, all bool, get func(page int) ([]T, error)) ([]T, error) {
 	items := make([]T, 0, limit)
 
 	for p := page; ; p++ {
@@ -252,6 +273,8 @@ func FetchPages[T any](page, limit int, all bool, get func(page int) ([]T, error
 		pageItems, err := get(p)
 		if err != nil {
 			if endOfWalk(err, page, p, all) {
+				noteIncompleteWalk(notices, plural, p)
+
 				return items, nil
 			}
 

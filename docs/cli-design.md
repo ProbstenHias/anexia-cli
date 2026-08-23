@@ -115,6 +115,12 @@ exactly once, with `--page` beyond the first rejected as a usage mistake instead
 returning page one. And the thousand-page backstop bounds pages of results rather than requests,
 so a result set exactly that long is returned instead of reported as a runaway.
 
+Ending a walk on a not-found is a guess, and the CLI says so. The same 404 could mean a page past
+the end, a parent object deleted while the walk ran, or a proxy having a bad moment, and nothing in
+the response tells them apart. So the walk ends, keeps what it collected, and writes a warning to
+stderr naming the page it stopped at. A 404 on the first page the user asked for is different: it
+is not past anything, so it stays a plain not-found and exits 4.
+
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
 
@@ -155,9 +161,12 @@ useless. The full object is one `-o json` away.
 `tsv` is `table` without the alignment: raw values, lowercase headers, tab-separated. This is the
 one to pipe into `cut` and `awk`.
 
-`json` and `yaml` render the Engine object as it came off the wire, using the same field names
-the API uses. Both are derived from the same JSON encoding, so `yaml` keys match `json` keys
-exactly.
+`json` and `yaml` render the decoded Engine object using the API's own field names. Both come from
+the same JSON encoding, so `yaml` keys match `json` keys exactly.
+
+Decoded, not forwarded: what you get is go-anxcloud's view of the object, so a field the Engine
+sent that the library does not model is dropped, a field it models but the Engine omitted appears
+as a zero value, and a few objects reshape what they decode. Do not diff this against `curl`.
 
 `--no-headers` affects `table` and `tsv` only.
 
@@ -299,9 +308,15 @@ plural alias, an exit code that depended on the client, a `--all` flag present o
 one half and returned a 400 on the other. Sharing a helper is how that stops happening.
 
 That last one needs the hand-written half to do something the registry does not. The legacy clients
-build their URLs by interpolating filter values into a format string, so the CLI escapes them
-before handing them over. Skipping it does not just break a value with a space: a value containing
-an ampersand becomes extra query parameters.
+build their URLs by interpolating values into a format string, so the CLI escapes every value it
+hands them, filters and identifiers alike. Skipping it does not just break a value with a space: an
+ampersand in a filter becomes extra query parameters, and a question mark in an identifier ends the
+path, so the request addresses a different object and overrides the flags the user passed. On a
+delete that means removing the wrong tag and reporting success.
+
+Query and path escaping are not interchangeable. A query escaper writes a space as a plus, which a
+path reader takes literally, so identifiers go through the path escaper and filters through the
+query one.
 
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents
@@ -330,6 +345,9 @@ and so does resolving that alias through the tree, since cobra resolves whatever
 given. Only comparing it against the noun catches a typo. Both of those were live defects here, and
 every check in the file has been confirmed to fail against a deliberate violation, which is the
 third thing: a check nobody has seen fail is a guess.
+
+The two checks that need a server currently only walk the `core` group, so the first command in a
+new group lands outside them. Widen the prefix when that happens.
 
 Two rules are checked by targeted tests rather than by walking the tree, because they need a
 server to observe: `--all` requesting every page exactly once from any starting page, and

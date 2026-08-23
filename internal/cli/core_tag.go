@@ -23,6 +23,18 @@ func queryValue(v string) string {
 	return url.QueryEscape(v)
 }
 
+// pathValue escapes an identifier destined for a legacy client's URL path.
+//
+// Unescaped, a question mark in an identifier ends the path and the rest
+// becomes query parameters, so the request addresses a different object than
+// the user named and can override the flags they passed. On a delete that
+// means removing the wrong tag and reporting success. Query escaping is not
+// interchangeable here: it encodes a space as a plus, which a path reader takes
+// literally.
+func pathValue(v string) string {
+	return url.PathEscape(v)
+}
+
 // newCoreTagCommand builds "core tag". Tags have no object in go-anxcloud's
 // generic pkg/apis tree, so these commands drive the legacy core/tags client
 // directly rather than going through the resource registry.
@@ -74,7 +86,7 @@ func newCoreTagListCommand(opts *globalOptions) *cobra.Command {
 			// straight through and the flag means what it says.
 			a := tags.NewAPI(c)
 
-			found, err := resource.FetchPages(page, limit, all, func(p int) ([]tags.Summary, error) {
+			found, err := resource.FetchPages(cmd.ErrOrStderr(), "tags", page, limit, all, func(p int) ([]tags.Summary, error) {
 				return a.List(ctx, p, limit,
 					queryValue(name), queryValue(service), queryValue(organization), queryValue(order),
 					descending)
@@ -122,7 +134,7 @@ func newCoreTagGetCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			info, err := tags.NewAPI(c).Get(ctx, args[0])
+			info, err := tags.NewAPI(c).Get(ctx, pathValue(args[0]))
 			if err != nil {
 				return opts.Fail(fmt.Errorf("reading tag %q: %w", args[0], err))
 			}
@@ -234,7 +246,7 @@ func newCoreTagDeleteCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			if err := tags.NewAPI(c).Delete(ctx, args[0], queryValue(service)); err != nil {
+			if err := tags.NewAPI(c).Delete(ctx, pathValue(args[0]), queryValue(service)); err != nil {
 				return opts.Fail(fmt.Errorf("deleting tag %q: %w", args[0], err))
 			}
 

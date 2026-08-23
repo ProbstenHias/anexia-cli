@@ -445,7 +445,7 @@ func TestListAllKeepsResultsWhenAPageAfterTheLastIsRejected(t *testing.T) {
 			args := append(slices.Clone(tt.args), "--all", "--limit", "1", "-o", "json",
 				"--token", "tok", "--api-base-url", srv.URL)
 
-			stdout, _, err := run(t, args...)
+			stdout, stderr, err := run(t, args...)
 
 			require.NoError(t, err, "the walk must end on the rejected page, not fail")
 
@@ -460,6 +460,11 @@ func TestListAllKeepsResultsWhenAPageAfterTheLastIsRejected(t *testing.T) {
 			}
 
 			require.Equal(t, tt.wantIDs, ids)
+
+			// The same 404 could be a deleted parent or a flaky proxy, so both
+			// halves have to say the results may be short rather than let
+			// partial output look complete.
+			require.Contains(t, stderr, "stopped at page 3")
 		})
 	}
 }
@@ -747,6 +752,58 @@ func TestCoreTagDeleteConfirmed(t *testing.T) {
 	require.Equal(t, http.MethodDelete, last.method)
 	require.Contains(t, last.query, "service_identifier=s-1")
 	require.Equal(t, "deleted tag t-1\n", stderr)
+}
+
+// TestCoreTagIdentifiersAddressExactlyTheObjectAsked covers the identifier the
+// user passes positionally, which the legacy client interpolates into the URL
+// path. An identifier carrying a query or fragment character must address the
+// object the user named, or nothing: reading or deleting a different object and
+// reporting success is the worst outcome available here.
+//
+// The generic half sends such an identifier escaped and gets an honest miss, so
+// this is also the two halves agreeing.
+func TestCoreTagIdentifiersAddressExactlyTheObjectAsked(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "get", args: []string{"core", "tag", "get"}},
+		{name: "delete", args: []string{"core", "tag", "delete"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+
+			const id = "t-1?service_identifier=other"
+
+			srv, last := server(t, http.StatusOK, `{"data":{"identifier":"t-1","name":"prod"}}`)
+
+			args := append(slices.Clone(tt.args), id,
+				"--token", "tok", "--api-base-url", srv.URL)
+			if tt.name == "delete" {
+				args = append(args, "--service", "s-1", "--yes")
+			}
+
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+
+			// The whole identifier belongs in the path, so the Engine can
+			// answer for the object the user actually named. last.path is the
+			// decoded path, so this compares against the identifier as typed.
+			require.Equal(t, "/api/core/v1/tags.json/"+id, last.path)
+
+			// And it must not have leaked into the query, where on a delete it
+			// would override the flag the user passed.
+			values, err := url.ParseQuery(last.query)
+			require.NoError(t, err)
+			require.Empty(t, values.Get("other"))
+
+			if tt.name == "delete" {
+				require.Equal(t, "s-1", values.Get("service_identifier"))
+			}
+		})
+	}
 }
 
 // TestCoreTagDeleteEscapesTheServiceIdentifier is the delete-side counterpart:

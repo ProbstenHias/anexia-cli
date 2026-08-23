@@ -48,7 +48,7 @@ func newCoreServiceListCommand(opts *globalOptions) *cobra.Command {
 
 			a := service.NewAPI(c)
 
-			found, err := resource.FetchPages(page, limit, all, func(p int) ([]service.Service, error) {
+			found, err := resource.FetchPages(cmd.ErrOrStderr(), "services", page, limit, all, func(p int) ([]service.Service, error) {
 				return a.List(ctx, p, limit)
 			})
 			if err != nil {
