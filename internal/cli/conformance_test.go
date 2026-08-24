@@ -3,6 +3,8 @@ package cli_test
 import (
 	"net/http"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,7 +15,6 @@ import (
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
-	"github.com/ProbstenHias/anexia-cli/internal/output"
 )
 
 // verbs are the only command names allowed at a leaf of the command tree. The
@@ -74,6 +75,27 @@ var groupNames = map[string]bool{
 // it.
 var localGroups = map[string]bool{
 	"config": true,
+}
+
+var flagNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+
+// engineActions are the exact prefixes emitted before an Engine failure. An
+// explicit list makes a new command choose its wording deliberately and catches
+// a missing separator that would otherwise be mistaken for a colon in the
+// nested cause.
+var engineActions = map[string]string{
+	"anexia core location list":       "listing locations",
+	"anexia core location get":        `reading location "placeholder"`,
+	"anexia core resource list":       "listing resources",
+	"anexia core resource get":        `reading resource "placeholder"`,
+	"anexia core resource tag list":   `listing tags of resource "placeholder"`,
+	"anexia core resource tag add":    `tagging resource "placeholder"`,
+	"anexia core resource tag remove": `untagging resource "placeholder"`,
+	"anexia core tag list":            "listing tags",
+	"anexia core tag get":             `reading tag "placeholder"`,
+	"anexia core tag create":          `creating tag "placeholder"`,
+	"anexia core tag delete":          `deleting tag "placeholder"`,
+	"anexia core service list":        "listing services",
 }
 
 // engineCommand reports whether cmd is a leaf that talks to the Engine.
@@ -217,6 +239,31 @@ func TestConformanceLeafNamesAreNotAliasOnlyVerbs(t *testing.T) {
 		assert.False(t, aliasOnly[cmd.Name()],
 			"%s: %q is only ever an alias, so the command itself must be named something else", path(cmd), cmd.Name())
 	}
+}
+
+// TestConformanceDeleteCarriesDestroyAlias pins the one alias-only verb to the
+// command it belongs to. All other uses would create a second vocabulary for a
+// different operation.
+func TestConformanceDeleteCarriesDestroyAlias(t *testing.T) {
+	t.Parallel()
+
+	checked := 0
+
+	for _, cmd := range commands(t) {
+		if cmd.HasSubCommands() {
+			continue
+		}
+
+		hasDestroy := slices.Contains(cmd.Aliases, "destroy")
+		if cmd.Name() == "delete" {
+			assert.True(t, hasDestroy, "%s: delete must accept destroy as its alias", path(cmd))
+			checked++
+		} else {
+			assert.False(t, hasDestroy, "%s: destroy belongs only to delete", path(cmd))
+		}
+	}
+
+	assert.Positive(t, checked, "the tree should have delete commands to check")
 }
 
 func TestConformanceNounsAreSingular(t *testing.T) {
@@ -381,6 +428,8 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 		// package run and report nothing about the other commands.
 		require.NotEmpty(t, strings.Fields(action),
 			"%s: %q must name the action before the cause", full, message)
+		require.Equal(t, engineActions[full], action,
+			"%s: the action prefix must end before the nested cause begins", full)
 
 		// The action names what the command was doing, so it reads as a
 		// gerund. Without this the check passes on any cause that happens
@@ -472,11 +521,22 @@ func TestConformancePositionalArgumentsAreDocumented(t *testing.T) {
 			continue
 		}
 
-		// A leaf taking positional arguments must name them in Use so the
-		// help output shows what to pass, and a leaf that names them must
-		// accept them.
-		assert.Equal(t, takesPositionalArgs(cmd), strings.Contains(cmd.Use, "<"),
-			"%s: Use must name every positional argument the command accepts, like \"get <id>\"", path(cmd))
+		if cmd.Args == nil {
+			continue
+		}
+
+		documented := len(regexp.MustCompile(`<[^>]+>`).FindAllString(cmd.Use, -1))
+		accepted := -1
+		for n := range 4 {
+			if cmd.ValidateArgs(make([]string, n)) == nil {
+				accepted = n
+				break
+			}
+		}
+
+		require.NotEqual(t, -1, accepted, "%s: validator accepts no supported argument count", path(cmd))
+		assert.Equal(t, accepted, documented,
+			"%s: Use must name each required positional argument separately", path(cmd))
 	}
 }
 
@@ -508,8 +568,8 @@ func TestConformanceFlagNamesAreLowercaseKebabCase(t *testing.T) {
 
 	for _, cmd := range commands(t) {
 		cmd.Flags().VisitAll(func(f *pflag.Flag) {
-			assert.Equal(t, strings.ToLower(f.Name), f.Name, "%s: flag --%s must be lowercase", path(cmd), f.Name)
-			assert.NotContains(t, f.Name, "_", "%s: flag --%s must use dashes, not underscores", path(cmd), f.Name)
+			assert.Regexp(t, flagNamePattern, f.Name,
+				"%s: flag --%s must be lowercase kebab-case", path(cmd), f.Name)
 			assert.NotEmpty(t, f.Usage, "%s: flag --%s needs a usage string", path(cmd), f.Name)
 		})
 	}
@@ -553,7 +613,7 @@ func TestConformanceEveryEngineCommandSupportsEveryOutputFormat(t *testing.T) {
 
 		full := cmd.CommandPath()
 
-		for _, format := range append(output.Formats, "xml") {
+		for _, format := range []string{"table", "json", "yaml", "tsv", "xml"} {
 			args := append(invocation(cmd), "-o", string(format))
 
 			_, _, err := runWithInput(t, "y\n", args...)

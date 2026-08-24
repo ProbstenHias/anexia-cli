@@ -297,7 +297,8 @@ func FetchPages[T any](notices io.Writer, plural string, page, limit int, all bo
 // ValidateIdentifier rejects an argument that names no object.
 //
 // Both clients put an identifier straight into the URL path, so a value that is
-// empty or is only path punctuation does not address a member of the collection.
+// empty, contains a path separator, or is only path punctuation does not address
+// a member of the collection.
 // Empty leaves a trailing slash and addresses the collection itself; a relative
 // segment such as ".." is normalized away and addresses whatever sits above the
 // endpoint. Either can make the Engine act on something the caller never named,
@@ -306,14 +307,15 @@ func FetchPages[T any](notices io.Writer, plural string, page, limit int, all bo
 // dot leaves it a dot.
 //
 // What counts as a valid identifier is otherwise the Engine's business, so this
-// only rules out the values that cannot name one.
+// only rules out values that cannot stay in one URL path segment.
 func ValidateIdentifier(what, value string) error {
-	// An empty value is one empty segment, so the loop covers it too.
-	for _, segment := range strings.Split(value, "/") {
-		switch strings.TrimSpace(segment) {
-		case "", ".", "..":
-			return errmap.Usagef("%s %q does not name a %s", what, value, what)
-		}
+	if strings.Contains(value, "/") {
+		return errmap.Usagef("%s %q does not name a %s", what, value, what)
+	}
+
+	switch strings.TrimSpace(value) {
+	case "", ".", "..":
+		return errmap.Usagef("%s %q does not name a %s", what, value, what)
 	}
 
 	return nil

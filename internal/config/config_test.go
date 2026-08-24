@@ -3,7 +3,6 @@ package config_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -189,23 +188,19 @@ func TestMask(t *testing.T) {
 func TestMaskKeepsValidUTF8(t *testing.T) {
 	t.Parallel()
 
-	for _, s := range []string{"äöüß1", "tokenäöü", "日本語トークン", "🔑🔑🔑🔑🔑"} {
-		masked := config.Mask(s)
-
-		require.True(t, utf8.ValidString(masked), "Mask(%q) = %q is not valid UTF-8", s, masked)
-		require.True(t, strings.HasSuffix(s, lastRunes(masked, 4)),
-			"Mask(%q) = %q must end in the value's own last four characters", s, masked)
-	}
-}
-
-// lastRunes returns the final n runes of s.
-func lastRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+	tests := map[string]string{
+		"äöüß1":     "*öüß1",
+		"abcdefäöü": "*****fäöü",
+		"日本語文字列":    "**語文字列",
+		"🔑🔑🔑🔑🔑":     "*🔑🔑🔑🔑",
 	}
 
-	return string(r[len(r)-n:])
+	for value, want := range tests {
+		masked := config.Mask(value)
+
+		require.True(t, utf8.ValidString(masked), "Mask(%q) = %q is not valid UTF-8", value, masked)
+		require.Equal(t, want, masked, "Mask(%q) must hide every rune except the last four", value)
+	}
 }
 
 func TestSetUnknownKey(t *testing.T) {

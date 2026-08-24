@@ -187,7 +187,7 @@ func TestWriterObjectYAMLKeepsLargeNumbersExact(t *testing.T) {
 // TestWriterObjectYAMLKeepsNumbersNumeric checks that a number stays a number
 // for the reader, not just that its digits survive. YAML 1.1, which is what
 // PyYAML and most non-Go readers implement, only resolves an exponent form as a
-// float when it carries a decimal point or a signed exponent, so emitting the
+// float when it carries both a decimal point and a signed exponent, so emitting the
 // JSON spelling verbatim can turn a number into a string on the way out.
 func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 	t.Parallel()
@@ -201,6 +201,7 @@ func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 		{name: "exponent with a fraction", json: `1.5e10`, want: "1.5e+10"},
 		{name: "negative exponent", json: `1e-7`, want: "1.0e-7"},
 		{name: "plain integer", json: `42`, want: "42"},
+		{name: "negative zero", json: `-0`, want: "-0"},
 		{name: "plain float", json: `0.1`, want: "0.1"},
 		{name: "beyond int64", json: `12345678901234567890123`, want: "12345678901234567890123"},
 

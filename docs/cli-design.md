@@ -83,7 +83,7 @@ Global flags live on the root command and work everywhere.
 | `-o`, `--output` | `table` | Output format: `table`, `json`, `yaml`, `tsv`. |
 | `--no-headers` | `false` | Drop the header row from `table` and `tsv`. |
 | `-y`, `--yes` | `false` | Skip confirmation prompts. |
-| `--timeout` | `30s` | Deadline for each API request. |
+| `--timeout` | `30s` | Deadline for the whole command, including every page of a list. |
 
 Every `list` over a collection accepts the same paging flags: `--page` (default 1), `--limit`
 (default 50, capped at 1000), and `--all` to walk every page. Relation lists such as
@@ -150,14 +150,13 @@ Every positional argument is named in the command's `Use` string, so help output
 `get <id>` and `tag add <resource-id> <tag>...`. Every leaf validates its argument count, so a
 stray argument is an error rather than being silently dropped.
 
-An argument that cannot name an object is refused before anything is sent. Both clients put an
-identifier into the URL path, so an empty one addresses the collection rather than a member of it,
-and a relative segment like `..` is normalized away and addresses whatever sits above the endpoint.
-Either lets the Engine act on something the caller never named, and on a `delete` that is the worst
-outcome available: `tag remove r-1 ..` issued a delete against the resource itself and reported
-success. Escaping cannot help, because percent-encoding a dot leaves it a dot. Anything else about
-what makes a valid identifier is the Engine's business, so the check only rules out the values that
-name nothing.
+An argument that cannot stay in one URL path segment is refused before anything is sent. Both
+clients put an identifier into the path, so an empty value addresses the collection, a slash adds
+another segment, and a relative segment like `..` is normalized away. Each can make the Engine act
+on something the caller never named, and on a `delete` that is the worst outcome available:
+`tag remove r-1 ..` issued a delete against the resource itself and reported success. Escaping
+cannot help because go-anxcloud parses the escaped path and joins it again, turning an escaped
+slash back into structure. Anything else about a valid identifier is the Engine's business.
 
 ## Output
 

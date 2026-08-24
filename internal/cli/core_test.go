@@ -775,40 +775,40 @@ func TestCoreTagIdentifiersAddressExactlyTheObjectAsked(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			isolate(t)
+		for _, id := range []string{"t-1?service_identifier=other", "tag with space"} {
+			t.Run(tt.name+" "+id, func(t *testing.T) {
+				isolate(t)
 
-			const id = "t-1?service_identifier=other"
+				srv, last := server(t, http.StatusOK, `{"data":{"identifier":"t-1","name":"prod"}}`)
 
-			srv, last := server(t, http.StatusOK, `{"data":{"identifier":"t-1","name":"prod"}}`)
+				args := append(slices.Clone(tt.args), id,
+					"--token", "tok", "--api-base-url", srv.URL)
+				if tt.name == "delete" {
+					args = append(args, "--service", "s-1", "--yes")
+				}
 
-			args := append(slices.Clone(tt.args), id,
-				"--token", "tok", "--api-base-url", srv.URL)
-			if tt.name == "delete" {
-				args = append(args, "--service", "s-1", "--yes")
-			}
+				_, _, err := run(t, args...)
+				require.NoError(t, err)
 
-			_, _, err := run(t, args...)
-			require.NoError(t, err)
+				// The whole identifier belongs in the path, so the Engine can
+				// answer for the object the user actually named. last.path is the
+				// decoded path, so this compares against the identifier as typed.
+				require.Equal(t, "/api/core/v1/tags.json/"+id, last.path)
 
-			// The whole identifier belongs in the path, so the Engine can
-			// answer for the object the user actually named. last.path is the
-			// decoded path, so this compares against the identifier as typed.
-			require.Equal(t, "/api/core/v1/tags.json/"+id, last.path)
+				// And it must not have leaked into the query, where on a delete it
+				// would override the flag the user passed. Asserting the whole
+				// query rather than one key, because the smuggled key is whatever
+				// the identifier happens to contain.
+				values, err := url.ParseQuery(last.query)
+				require.NoError(t, err)
 
-			// And it must not have leaked into the query, where on a delete it
-			// would override the flag the user passed. Asserting the whole
-			// query rather than one key, because the smuggled key is whatever
-			// the identifier happens to contain.
-			values, err := url.ParseQuery(last.query)
-			require.NoError(t, err)
-
-			if tt.name == "delete" {
-				require.Equal(t, url.Values{"service_identifier": {"s-1"}}, values)
-			} else {
-				require.Empty(t, last.query)
-			}
-		})
+				if tt.name == "delete" {
+					require.Equal(t, url.Values{"service_identifier": {"s-1"}}, values)
+				} else {
+					require.Empty(t, last.query)
+				}
+			})
+		}
 	}
 }
 
@@ -832,7 +832,7 @@ func TestIdentifiersThatAddressNoObjectAreRejected(t *testing.T) {
 
 	// Arguments that name nothing: empty, whitespace only, the current and
 	// parent directory, and a bare separator.
-	ids := []string{"", "   ", ".", "..", "/", "../..", "a/../.."}
+	ids := []string{"", "   ", ".", "..", "/", "../..", "a/../..", "a/b"}
 
 	for _, cmd := range commands {
 		for _, id := range ids {
@@ -861,7 +861,7 @@ func TestIdentifiersThatAddressNoObjectAreRejected(t *testing.T) {
 // a command that removes a tag issued a delete against its parent.
 func TestRelationTagsThatAddressNoObjectAreRejected(t *testing.T) {
 	for _, verb := range []string{"add", "remove"} {
-		for _, tag := range []string{"", "..", "/", "a/../.."} {
+		for _, tag := range []string{"", "..", "/", "a/../..", "prod/staging"} {
 			t.Run(fmt.Sprintf("%s %q", verb, tag), func(t *testing.T) {
 				isolate(t)
 

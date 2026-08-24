@@ -228,6 +228,9 @@ func numbersAsScalars(v any) any {
 // digits verbatim, which is the one case where precision beats typing.
 func numberScalar(n json.Number) any {
 	text := n.String()
+	if text == "-0" {
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+	}
 
 	if i, err := strconv.ParseInt(text, 10, 64); err == nil {
 		return i

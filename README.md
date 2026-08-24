@@ -9,8 +9,9 @@
 A command-line interface for the [Anexia Engine API](https://engine.anexia-it.com/), built on the
 official [go-anxcloud](https://github.com/anexia-it/go-anxcloud) client.
 
-Every resource follows the same shape, `anexia <group> <noun> <verb>`, with the same verbs, the
-same paging flags and the same four output formats. See [docs/cli-design.md](docs/cli-design.md)
+Every resource follows the same shape, `anexia <group> <noun> <verb>`, with the same verb
+vocabulary, paging flags and four output formats. Each resource exposes only the operations its
+API supports. See [docs/cli-design.md](docs/cli-design.md)
 for the rules and [Feature coverage](#feature-coverage) for what is implemented so far.
 
 The project is `anexia-cli`; the installed command is `anexia`.
@@ -133,8 +134,8 @@ api_base_url: https://engine.anexia-it.com
 | `anexia config view` | Print the whole stored config in any output format. |
 
 The token is masked in both `config get token` and `config view`: all but the last four
-characters are replaced with `*`. `get` and `view` read the config file only, they do not layer in
-the environment or flags.
+characters are replaced with `*`; values four characters or shorter become `****`. `get` and
+`view` read the config file only, they do not layer in the environment or flags.
 
 ## Upgrading from 0.1
 
