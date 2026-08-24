@@ -27,8 +27,8 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `anexia core locations list` works too, but the canonical name in help output is singular. Use
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
-Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
-and later `network`, `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
+Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core` and
+`network`, and later `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 
@@ -54,8 +54,10 @@ Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `
 always fails with "operation not supported" is worse than no `create` at all.
 
 The same rule applies to the registry itself. `internal/resource` currently implements `list` and
-`get`, because every resource the CLI reaches today is read-only. The write verbs are specified
-here and land with the first resource that needs them, rather than sitting unused.
+`get`. The write verbs are specified here and land with the first resource that needs them, rather
+than sitting unused. Some resources the CLI already reaches are writable in the Engine, `network
+prefix` and `network address` among them, but they wait for the registry rather than growing a
+hand-written `create` that the registry half could not match.
 
 Two extra verbs exist for relations, meaning a collection a resource owns that has no identity of
 its own. A resource's tags are the example:
@@ -141,9 +143,9 @@ be plural, but the Engine does not currently accept any.
 Free-text search is the one thing that flag naming rule cannot cover, because there is no field to
 name it after: the Engine matches the term against whichever fields it likes. That flag is
 `--search`, and it is only on the commands whose endpoint offers it, `network prefix list` and
-`network address list`. Where an endpoint offers both, search and the field filters are separate
-endpoints that do not accept each other's parameters, so asking for both at once is a usage
-mistake rather than a request the CLI narrows on its own.
+`network address list`. Where a resource offers both, as `network address list` does, search and
+the field filters live on separate endpoints that do not accept each other's parameters, so asking
+for both at once is a usage mistake rather than a request the CLI narrows on its own.
 
 Sort controls are not filters and are named for what they do: `--order` takes the field to sort
 by, `--descending` reverses it. Only `core tag list` has them, because it is the only endpoint
@@ -332,11 +334,18 @@ plural alias, an exit code that depended on the client, a `--all` flag present o
 one half and returned a 400 on the other. Sharing a helper is how that stops happening.
 
 That last one needs the hand-written half to do something the registry does not. The legacy clients
-build their URLs by interpolating values into a format string, so the CLI escapes every value it
+build their URLs by interpolating values into a format string, so the CLI escapes the values it
 hands them, filters and identifiers alike. Skipping it does not just break a value with a space: an
 ampersand in a filter becomes extra query parameters, and a question mark in an identifier ends the
 path, so the request addresses a different object and overrides the flags the user passed. On a
 delete that means removing the wrong tag and reporting success.
+
+Which values need it is per client, not per half. The `core/tags` client interpolates its filters
+raw, so `core tag list` escapes them. The `ipam` clients behind `network prefix` and `network
+address` escape their own query values, so escaping there too would double it and search for a
+literal `%26`. Identifiers still go through the path escaper in both cases. Check what the client
+does before adding or removing an escape, and pin the answer with a test that a doubled escape
+would fail.
 
 Query and path escaping are not interchangeable. A query escaper writes a space as a plus, which a
 path reader takes literally, so identifiers go through the path escaper and filters through the

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"testing"
@@ -180,8 +181,7 @@ func TestNetworkPrefixListPaging(t *testing.T) {
 	_, _, err := run(t, "network", "prefix", "list",
 		"--page", "3", "--limit", "7", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
-	require.Contains(t, last.query, "page=3")
-	require.Contains(t, last.query, "limit=7")
+	requirePaging(t, last.query, "3", "7")
 }
 
 func TestNetworkPrefixGetTable(t *testing.T) {
@@ -273,37 +273,51 @@ func TestNetworkAddressListUnsetFiltersAreNotSent(t *testing.T) {
 	require.NotContains(t, last.query, "vlan=")
 }
 
-func TestNetworkAddressListRejectsSearchWithFilters(t *testing.T) {
-	isolate(t)
+// A rejected filter combination has to be rejected before anything is sent.
+// Each case points at a fake server and asserts it was never called, so a
+// regression that lets the value through cannot pass by reaching some other
+// endpoint and failing there for an unrelated reason.
+func TestNetworkAddressListRejectsBadFilters(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "search cannot be combined with a field filter",
+			args: []string{"--search", "10.0.0.1", "--prefix", "p-1"},
+			want: "--search",
+		},
+		{
+			name: "an unknown IP version",
+			args: []string{"--version", "5"},
+			want: "--version",
+		},
+		{
+			// Version 0 is as wrong as version 5: there is no IP version 0.
+			// Reading it as "unset" would quietly widen the request to every
+			// address instead of saying the value cannot be served.
+			name: "an explicitly passed version zero",
+			args: []string{"--version", "0"},
+			want: "--version",
+		},
+	}
 
-	_, _, err := run(t, "network", "address", "list",
-		"--search", "10.0.0.1", "--prefix", "p-1", "--token", "tok")
-	require.Error(t, err)
-	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
-	require.ErrorContains(t, err, "--search")
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, twoAddresses)
 
-func TestNetworkAddressListRejectsUnknownVersion(t *testing.T) {
-	isolate(t)
+			args := append([]string{"network", "address", "list"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv.URL)
 
-	_, _, err := run(t, "network", "address", "list",
-		"--version", "5", "--token", "tok")
-	require.Error(t, err)
-	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
-	require.ErrorContains(t, err, "--version")
-}
-
-// An explicitly passed --version 0 is as wrong as --version 5: there is no IP
-// version 0. Reading it as "unset" would quietly widen the request to every
-// address instead of telling the user the value cannot be served.
-func TestNetworkAddressListRejectsExplicitZeroVersion(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "network", "address", "list",
-		"--version", "0", "--token", "tok")
-	require.Error(t, err)
-	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
-	require.ErrorContains(t, err, "--version")
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.ErrorContains(t, err, tt.want)
+			require.Empty(t, last.path, "the request must not reach the Engine at all")
+		})
+	}
 }
 
 // The address client query-escapes its search term itself, exactly like the
@@ -443,8 +457,20 @@ func TestNetworkAddressListPaging(t *testing.T) {
 	_, _, err := run(t, "network", "address", "list",
 		"--page", "3", "--limit", "7", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
-	require.Contains(t, last.query, "page=3")
-	require.Contains(t, last.query, "limit=7")
+	requirePaging(t, last.query, "3", "7")
+}
+
+// requirePaging pins the paging parameters as parsed values. Substring
+// matching would accept page=30 for page=3, and the legacy ipam clients also
+// send an always-present empty search=, so the raw query cannot be compared
+// whole either.
+func requirePaging(t *testing.T, query, page, limit string) {
+	t.Helper()
+
+	values, err := url.ParseQuery(query)
+	require.NoError(t, err)
+	require.Equal(t, []string{page}, values["page"])
+	require.Equal(t, []string{limit}, values["limit"])
 }
 
 // Structured output renders the decoded object, not the table's column subset.
@@ -502,6 +528,18 @@ func TestNetworkListAllCarriesFiltersAcrossPages(t *testing.T) {
 			args:     []string{"network", "address", "list", "--prefix", "p-1"},
 			wantPath: "/api/ipam/v1/address/filtered.json",
 			wantQry:  "prefix=p-1",
+			body: func(page int) string {
+				return fmt.Sprintf(`{"data":{"data":[{"identifier":"a-%d","name":"10.0.0.%d"}]}}`, page, page)
+			},
+			empty: noAddresses,
+		},
+		{
+			// The address noun reaches two endpoints, so its search term has
+			// to survive the walk on the unfiltered one as well.
+			name:     "address keeps its search term",
+			args:     []string{"network", "address", "list", "--search", "10.0."},
+			wantPath: "/api/ipam/v1/address.json",
+			wantQry:  "search=10.0.",
 			body: func(page int) string {
 				return fmt.Sprintf(`{"data":{"data":[{"identifier":"a-%d","name":"10.0.0.%d"}]}}`, page, page)
 			},
