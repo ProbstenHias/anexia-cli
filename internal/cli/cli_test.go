@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
@@ -166,6 +167,29 @@ func TestUsageMistakesExitWithUsageCode(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err), "%v must exit with the usage code", tt.args)
 		})
+	}
+}
+
+// TestCompletionCommandsKeepCobraFunctionality pins the behavior retained from
+// Cobra's default command while using an owned command for error classification.
+func TestCompletionCommandsKeepCobraFunctionality(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		t.Run(shell, func(t *testing.T) {
+			stdout, _, err := run(t, "completion", shell, "--no-descriptions")
+
+			require.NoError(t, err)
+			require.NotEmpty(t, stdout)
+		})
+	}
+
+	root := cli.NewRootCommand(cli.Deps{})
+	for _, path := range [][]string{{"completion", "bash"}, {"help"}} {
+		cmd, _, err := root.Find(path)
+		require.NoError(t, err)
+		require.NotNil(t, cmd.ValidArgsFunction, "%v must disable file completion", path)
+
+		_, directive := cmd.ValidArgsFunction(cmd, nil, "")
+		require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	}
 }
 

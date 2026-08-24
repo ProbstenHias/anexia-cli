@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -214,9 +215,10 @@ func NewRootCommand(d Deps) *cobra.Command {
 
 func newCompletionCommand(root *cobra.Command) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "completion",
-		Short: "Generate a shell completion script",
-		Args:  cobra.NoArgs,
+		Use:               "completion",
+		Short:             "Generate a shell completion script",
+		Args:              cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -224,22 +226,41 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 
 	generators := []struct {
 		name string
-		run  func(io.Writer) error
+		run  func(io.Writer, bool) error
 	}{
-		{name: "bash", run: root.GenBashCompletion},
-		{name: "zsh", run: root.GenZshCompletion},
-		{name: "fish", run: func(w io.Writer) error { return root.GenFishCompletion(w, true) }},
-		{name: "powershell", run: root.GenPowerShellCompletion},
+		{name: "bash", run: func(w io.Writer, descriptions bool) error {
+			return root.GenBashCompletionV2(w, descriptions)
+		}},
+		{name: "zsh", run: func(w io.Writer, descriptions bool) error {
+			if descriptions {
+				return root.GenZshCompletion(w)
+			}
+
+			return root.GenZshCompletionNoDesc(w)
+		}},
+		{name: "fish", run: root.GenFishCompletion},
+		{name: "powershell", run: func(w io.Writer, descriptions bool) error {
+			if descriptions {
+				return root.GenPowerShellCompletionWithDesc(w)
+			}
+
+			return root.GenPowerShellCompletion(w)
+		}},
 	}
 	for _, generator := range generators {
-		cmd.AddCommand(&cobra.Command{
-			Use:   generator.name,
-			Short: "Generate completion for " + generator.name,
-			Args:  cobra.NoArgs,
+		noDescriptions := false
+		shell := &cobra.Command{
+			Use:                   generator.name,
+			Short:                 "Generate completion for " + generator.name,
+			Args:                  cobra.NoArgs,
+			ValidArgsFunction:     cobra.NoFileCompletions,
+			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return generator.run(cmd.OutOrStdout())
+				return generator.run(cmd.OutOrStdout(), !noDescriptions)
 			},
-		})
+		}
+		shell.Flags().BoolVar(&noDescriptions, "no-descriptions", false, "disable completion descriptions")
+		cmd.AddCommand(shell)
 	}
 
 	return cmd
@@ -249,6 +270,21 @@ func newHelpCommand(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
 		Use:   "help [command]",
 		Short: "Help about any command",
+		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			target, _, err := root.Find(args)
+			if err != nil || target == nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+
+			var completions []cobra.Completion
+			for _, child := range target.Commands() {
+				if child.IsAvailableCommand() && strings.HasPrefix(child.Name(), toComplete) {
+					completions = append(completions, cobra.CompletionWithDesc(child.Name(), child.Short))
+				}
+			}
+
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		},
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return nil
