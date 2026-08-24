@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -105,6 +106,116 @@ func TestLoadRejectsUnknownKey(t *testing.T) {
 	require.ErrorContains(t, err, path)
 }
 
+// TestLoadKeepsTokensThatLookLikeOtherTypes covers a hand-written config file,
+// which the README invites by documenting the format. YAML resolves an unquoted
+// scalar by its own type rules, so a token made only of digits is a number by
+// the time it reaches the struct, and a long one loses digits to float64. The
+// user then sees a masked value that looks right while every request fails on
+// authentication, with nothing pointing at the file.
+func TestLoadKeepsTokensThatLookLikeOtherTypes(t *testing.T) {
+	tokens := []string{
+		"12345678901234567890123456789012",
+		"01234567890123456789012345678901",
+		"0755",
+		"0x1f",
+		"1e5",
+		"1_000",
+		"2024-01-02",
+		"true",
+		".inf",
+	}
+
+	for _, token := range tokens {
+		t.Run(token, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("token: "+token+"\n"), 0o600))
+
+			cfg, err := config.Load(path)
+			require.NoError(t, err)
+			require.Equal(t, token, cfg.Token)
+		})
+	}
+}
+
+// TestLoadRejectsNullLikeTokens covers YAML values that mean null rather than
+// text. Silently decoding one to the empty string clears credentials; users who
+// genuinely have such a token must quote it to make it a string.
+func TestLoadRejectsNullLikeTokens(t *testing.T) {
+	for _, token := range []string{"null", "Null", "NULL", "~"} {
+		t.Run(token, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("token: "+token+"\n"), 0o600))
+
+			_, err := config.Load(path)
+
+			require.ErrorContains(t, err, `config key "token" is null`)
+			require.ErrorContains(t, err, "quote it")
+		})
+	}
+}
+
+// TestLoadRejectsNullOutsideADirectMapping covers YAML shapes that bypass a
+// top-level key/value scan: a null document and a null token inherited through
+// a merge alias. Both otherwise clear credentials silently.
+func TestLoadRejectsNullOutsideADirectMapping(t *testing.T) {
+	tests := map[string]string{ //nolint:gosec // G101: YAML fixtures, not credentials.
+		"null document": "null\n",
+		"merged token":  "<<: &defaults\n  token: null\n",
+	}
+
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+			_, err := config.Load(path)
+
+			require.ErrorContains(t, err, "null")
+		})
+	}
+}
+
+// TestLoadAllowsAConcreteValueToOverrideMergedNull follows YAML merge
+// semantics: an explicit key wins over the merged default, so the effective
+// token is not null and must load normally.
+func TestLoadAllowsAConcreteValueToOverrideMergedNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("<<: &defaults\n  token: null\ntoken: good\n"), 0o600))
+
+	got, err := config.Load(path)
+
+	require.NoError(t, err)
+	require.Equal(t, "good", got.Token)
+}
+
+// TestLoadRejectsANullAlias covers an explicit key whose YAML node is an alias
+// to null. Inspecting the alias node itself misses the effective null value and
+// silently clears the token.
+func TestLoadRejectsANullAlias(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := "<<:\n  - {api_base_url: https://engine.example}\n  - {api_base_url: &null_value null}\ntoken: *null_value\n"
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	_, err := config.Load(path)
+
+	require.ErrorContains(t, err, `config key "token" is null`)
+}
+
+// TestLoadRejectsNullThroughAnAliasedKey covers a mapping key supplied through
+// an alias. YAML treats it as the real token key, so null validation must do the
+// same rather than inspecting only the alias node's empty Value.
+func TestLoadRejectsNullThroughAnAliasedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := "api_base_url: &token_key token\n*token_key: null\n"
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	_, err := config.Load(path)
+
+	require.ErrorContains(t, err, `config key "token" is null`)
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))
@@ -145,6 +256,28 @@ func TestMask(t *testing.T) {
 	require.Equal(t, "****", config.Mask("abc"))
 	require.Equal(t, "****", config.Mask("abcd"))
 	require.Equal(t, "*bcde", config.Mask("abcde"))
+}
+
+// TestMaskKeepsValidUTF8 covers a value that is not plain ASCII. Masking by
+// byte splits a multi-byte rune and emits a lone continuation byte, so the
+// output of the one function whose job is producing a safe string is not text.
+// That reaches stdout through "config view" and breaks a consumer of -o json.
+func TestMaskKeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"äöüß1":     "*öüß1",
+		"abcdefäöü": "*****fäöü",
+		"日本語文字列":    "**語文字列",
+		"🔑🔑🔑🔑🔑":     "*🔑🔑🔑🔑",
+	}
+
+	for value, want := range tests {
+		masked := config.Mask(value)
+
+		require.True(t, utf8.ValidString(masked), "Mask(%q) = %q is not valid UTF-8", value, masked)
+		require.Equal(t, want, masked, "Mask(%q) must hide every rune except the last four", value)
+	}
 }
 
 func TestSetUnknownKey(t *testing.T) {

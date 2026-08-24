@@ -76,12 +76,93 @@ func Load(explicit string) (Config, error) {
 		return Config{}, err
 	}
 
+	// The path is the one koanf just read through the same resolution, so this
+	// opens no file the caller had not already asked for.
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path resolved by Path, not caller-supplied
+	if err != nil {
+		return Config{}, fmt.Errorf("reading config %s: %w", path, err)
+	}
+
+	// Decoded straight into the string fields rather than through koanf,
+	// whose parser resolves an unquoted scalar by YAML's type rules first.
+	// That turns a token of nothing but digits into a number and back into a
+	// different string, which fails authentication while looking correct in
+	// "config view". koanf is still used above, for the unknown-key check.
+	var document goyaml.Node
+	if err := goyaml.Unmarshal(raw, &document); err != nil {
+		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)
+	}
+	if len(document.Content) > 0 && document.Content[0].Tag == "!!null" {
+		return Config{}, fmt.Errorf("decoding config %s: config document is null", path)
+	}
+	for _, key := range Keys {
+		if value, found := mappingValue(&document, key, map[*goyaml.Node]bool{}); found && value.Tag == "!!null" {
+			return Config{}, fmt.Errorf("decoding config %s: config key %q is null; quote it to use a null-like string",
+				path, key)
+		}
+	}
+
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	if err := goyaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)
 	}
 
 	return cfg, nil
+}
+
+// mappingValue resolves one effective YAML mapping value, following merge
+// aliases while giving an explicit key precedence over a merged default.
+func mappingValue(node *goyaml.Node, key string, seen map[*goyaml.Node]bool) (*goyaml.Node, bool) {
+	if node == nil || seen[node] {
+		return nil, false
+	}
+	seen[node] = true
+
+	if node.Kind == goyaml.DocumentNode && len(node.Content) > 0 {
+		return mappingValue(node.Content[0], key, seen)
+	}
+	if node.Alias != nil {
+		return mappingValue(node.Alias, key, seen)
+	}
+	if node.Kind != goyaml.MappingNode {
+		return nil, false
+	}
+
+	// Explicit values override anything inherited through <<.
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if resolveAlias(node.Content[i]).Value == key {
+			return resolveAlias(node.Content[i+1]), true
+		}
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != "<<" {
+			continue
+		}
+
+		merged := node.Content[i+1]
+		if merged.Kind == goyaml.SequenceNode {
+			for _, child := range merged.Content {
+				if value, found := mappingValue(child, key, seen); found {
+					return value, true
+				}
+			}
+
+			continue
+		}
+
+		return mappingValue(merged, key, seen)
+	}
+
+	return nil, false
+}
+
+func resolveAlias(node *goyaml.Node) *goyaml.Node {
+	for node != nil && node.Alias != nil {
+		node = node.Alias
+	}
+
+	return node
 }
 
 // validateKeys rejects keys koanf would otherwise silently ignore.
@@ -187,13 +268,18 @@ func (c Config) Redacted() Config {
 func Mask(s string) string {
 	const visible = 4
 
+	// Counted in runes, not bytes: slicing a multi-byte value by byte splits a
+	// rune and emits a lone continuation byte, so the masked value would not
+	// be text.
+	r := []rune(s)
+
 	switch {
-	case s == "":
+	case len(r) == 0:
 		return ""
-	case len(s) <= visible:
+	case len(r) <= visible:
 		return strings.Repeat("*", visible)
 	default:
-		return strings.Repeat("*", len(s)-visible) + s[len(s)-visible:]
+		return strings.Repeat("*", len(r)-visible) + string(r[len(r)-visible:])
 	}
 }
 

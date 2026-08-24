@@ -3,15 +3,21 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 // isolate points config discovery at an empty temporary directory so tests
@@ -34,39 +40,61 @@ func isolate(t *testing.T) string {
 func run(t *testing.T, args ...string) (stdoutText, stderrText string, err error) {
 	t.Helper()
 
+	return runWithInput(t, "", args...)
+}
+
+// runWithInput is run with stdin wired up, for the confirmation prompts.
+func runWithInput(t *testing.T, input string, args ...string) (stdoutText, stderrText string, err error) {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	cmd := cli.NewRootCommand(cli.Deps{Stdout: &stdout, Stderr: &stderr})
 	cmd.SetArgs(args)
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader(input))
 
 	err = cmd.Execute()
 
 	return stdout.String(), stderr.String(), err
 }
 
-// locationServer serves a canned location.json response and records the query.
-func locationServer(t *testing.T, status int, body string) (srv *httptest.Server, lastQuery *string) {
+// server serves a canned JSON body on any path and records the last request.
+//
+// Only the last request survives, so this is for single-request commands. A
+// test that needs to assert on several requests must use its own handler
+// appending to a slice, or it will pass while later requests go unchecked.
+func server(t *testing.T, status int, body string) (srv *httptest.Server, last *request) {
 	t.Helper()
 
-	query := ""
+	seen := request{}
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/vsphere/v1/provisioning/location.json", r.URL.Path)
-		query = r.URL.RawQuery
+		seen.path = r.URL.Path
+		seen.query = r.URL.RawQuery
+		seen.method = r.Method
+
+		if r.Body != nil {
+			raw, _ := io.ReadAll(r.Body)
+			seen.body = string(raw)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
 
-	return srv, &query
+	return srv, &seen
 }
 
-const twoLocations = `{"data":[
-  {"code":"ANX04","name":"Vienna","country":"AT","country_name":"Austria","id":"id-1"},
-  {"code":"ANX63","name":"Frankfurt","country":"DE","id":"id-2"}
-]}`
+// request captures what the CLI sent, so tests can assert on the wire format.
+type request struct {
+	method string
+	path   string
+	query  string
+	body   string
+}
 
 func TestRootWithNoArgsPrintsHelp(t *testing.T) {
 	isolate(t)
@@ -74,9 +102,19 @@ func TestRootWithNoArgsPrintsHelp(t *testing.T) {
 	stdout, _, err := run(t)
 	require.NoError(t, err)
 	require.Contains(t, stdout, "anexia")
-	require.Contains(t, stdout, "location")
+	require.Contains(t, stdout, "core")
 	require.Contains(t, stdout, "config")
 	require.Contains(t, stdout, "version")
+}
+
+func TestRootHelpListsGlobalFlags(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t)
+	require.NoError(t, err)
+	require.Contains(t, stdout, "--no-headers")
+	require.Contains(t, stdout, "--yes")
+	require.Contains(t, stdout, "table, json, yaml, tsv")
 }
 
 func TestVersionCommand(t *testing.T) {
@@ -87,130 +125,319 @@ func TestVersionCommand(t *testing.T) {
 	require.Contains(t, stdout, "anexia dev")
 }
 
-func TestLocationWithoutSubcommandPrintsHelp(t *testing.T) {
+// TestRootRejectsOldLocationCommand covers the headline breaking change. The
+// old command must fail, and it must say where the replacement lives: a user
+// with it in a script or in shell history gets no other signal from the CLI.
+func TestRootRejectsOldLocationCommand(t *testing.T) {
 	isolate(t)
-
-	stdout, _, err := run(t, "location")
-	require.NoError(t, err)
-	require.Contains(t, stdout, "list")
-}
-
-func TestLocationListTable(t *testing.T) {
-	isolate(t)
-	srv, query := locationServer(t, http.StatusOK, twoLocations)
-
-	stdout, stderr, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Empty(t, stderr)
-	require.Equal(t, "page=1&limit=50", *query)
-	require.Equal(t,
-		"CODE    NAME        COUNTRY   ID\n"+
-			"ANX04   Vienna      Austria   id-1\n"+
-			"ANX63   Frankfurt   DE        id-2\n",
-		stdout)
-}
-
-func TestLocationListJSON(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, twoLocations)
-
-	stdout, _, err := run(t, "location", "list", "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-
-	var got []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
-	require.Len(t, got, 2)
-	require.Equal(t, "ANX04", got[0]["code"])
-	require.Equal(t, "Austria", got[0]["country_name"])
-}
-
-func TestLocationListPassesFilters(t *testing.T) {
-	isolate(t)
-	srv, query := locationServer(t, http.StatusOK, twoLocations)
-
-	_, _, err := run(t, "location", "list",
-		"--token", "tok", "--api-base-url", srv.URL,
-		"--page", "3", "--limit", "7",
-		"--location-code", "ANX04", "--organization", "org-1")
-	require.NoError(t, err)
-	require.Equal(t, "page=3&limit=7&location_code=ANX04&organization=org-1", *query)
-}
-
-func TestLocationListEmptyTable(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, `{"data":[]}`)
-
-	stdout, stderr, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Equal(t, "CODE   NAME   COUNTRY   ID\n", stdout)
-	require.Equal(t, "no locations found\n", stderr)
-}
-
-func TestLocationListEmptyJSON(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, `{"data":[]}`)
-
-	stdout, _, err := run(t, "location", "list", "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Equal(t, "[]\n", stdout)
-}
-
-func TestLocationListServerError(t *testing.T) {
-	isolate(t)
-	srv, _ := locationServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
-
-	_, _, err := run(t, "location", "list", "--token", "tok", "--api-base-url", srv.URL)
-	require.ErrorContains(t, err, "listing locations")
-}
-
-func TestLocationListMissingToken(t *testing.T) {
-	isolate(t)
-
-	_, stderr, err := run(t, "location", "list")
-	require.ErrorContains(t, err, "no API token")
-	require.NotContains(t, stderr, "Usage:")
-}
-
-func TestLocationListInvalidOutputFormat(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "-o", "yaml", "--token", "tok")
-	require.ErrorContains(t, err, `invalid output format "yaml"`)
-}
-
-func TestLocationListInvalidPage(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "--page", "0", "--token", "tok")
-	require.ErrorContains(t, err, "invalid --page 0")
-}
-
-func TestLocationListInvalidLimit(t *testing.T) {
-	isolate(t)
-
-	_, _, err := run(t, "location", "list", "--limit", "1001", "--token", "tok")
-	require.ErrorContains(t, err, "invalid --limit 1001")
-}
-
-func TestLocationListUsesConfigFile(t *testing.T) {
-	path := isolate(t)
-	srv, _ := locationServer(t, http.StatusOK, twoLocations)
-
-	require.NoError(t, os.WriteFile(path,
-		[]byte("token: file-token\napi_base_url: "+srv.URL+"\n"), 0o600))
-
-	stdout, _, err := run(t, "location", "list")
-	require.NoError(t, err)
-	require.Contains(t, stdout, "ANX04")
-}
-
-func TestLocationListRejectsMalformedConfig(t *testing.T) {
-	path := isolate(t)
-	require.NoError(t, os.WriteFile(path, []byte("nope: 1\n"), 0o600))
 
 	_, _, err := run(t, "location", "list")
-	require.ErrorContains(t, err, `unknown config key "nope"`)
-	require.ErrorContains(t, err, path)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.ErrorContains(t, err, "anexia core location list")
+}
+
+// TestUsageMistakesExitWithUsageCode pins the exit code for every way a user
+// can get the invocation wrong, since scripts branch on it.
+func TestUsageMistakesExitWithUsageCode(t *testing.T) {
+	isolate(t)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unknown command", []string{"bogus"}, `unknown command "bogus"`},
+		{"unknown command in group", []string{"core", "bogus"}, `unknown command "bogus"`},
+		{"unknown flag", []string{"core", "location", "list", "--bogus"}, "unknown flag: --bogus"},
+		{"too many arguments", []string{"core", "location", "get", "a", "b"}, "accepts 1 arg(s), received 2"},
+		{"missing argument", []string{"core", "location", "get"}, "accepts 1 arg(s), received 0"},
+		{"argument to a group", []string{"config", "view", "extra"}, "unknown command"},
+		{"invalid output format", []string{"core", "location", "list", "-o", "xml"}, "invalid output format"},
+		{"invalid page", []string{"core", "location", "list", "--page", "0"}, "--page 0 must be"},
+		{"argument to completion", []string{"completion", "bash", "extra"}, `unknown command "extra"`},
+		{"unknown completion shell", []string{"completion", "bogus"}, `unknown command "bogus"`},
+		{"unknown help topic", []string{"help", "bogus"}, `unknown command "bogus"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := run(t, tt.args...)
+
+			require.ErrorContains(t, err, tt.want)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err), "%v must exit with the usage code", tt.args)
+		})
+	}
+}
+
+// TestCompletionCommandsKeepCobraFunctionality pins the behavior retained from
+// Cobra's default command while using an owned command for error classification.
+func TestCompletionCommandsKeepCobraFunctionality(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		t.Run(shell, func(t *testing.T) {
+			stdout, _, err := run(t, "completion", shell, "--no-descriptions")
+
+			require.NoError(t, err)
+			require.NotEmpty(t, stdout)
+		})
+	}
+
+	root := cli.NewRootCommand(cli.Deps{})
+	for _, path := range [][]string{{"completion", "bash"}, {"help"}} {
+		cmd, _, err := root.Find(path)
+		require.NoError(t, err)
+		require.NotNil(t, cmd.ValidArgsFunction, "%v must disable file completion", path)
+
+		completions, directive := cmd.ValidArgsFunction(cmd, nil, "")
+		require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
+		if path[0] == "help" {
+			require.Contains(t, completions, "help\tHelp about any command")
+		}
+	}
+}
+
+func TestCompletionHelpKeepsInstallationGuidance(t *testing.T) {
+	stdout, _, err := run(t, "completion", "bash", "--help")
+
+	require.NoError(t, err)
+	require.Contains(t, stdout, "bash-completion")
+	require.Contains(t, stdout, "source <(anexia completion bash)")
+}
+
+// TestNonPositiveTimeoutIsAUsageMistake covers the user who passes a timeout
+// that cannot succeed. Every request under a zero or negative deadline fails
+// immediately, so reporting it as a timeout and advising the user to raise the
+// value they just chose explains nothing. It is a bad flag value, like --page 0,
+// and the Engine should never be contacted.
+func TestNonPositiveTimeoutIsAUsageMistake(t *testing.T) {
+	for _, timeout := range []string{"0", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, twoLocations)
+
+			_, _, err := run(t, "core", "location", "list",
+				"--timeout", timeout, "--token", "tok", "--api-base-url", srv.URL)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, err.Error(), "--timeout")
+			require.Empty(t, last.path, "no request should be made under an impossible deadline")
+		})
+	}
+}
+
+// TestInvalidOutputFormatIsRejectedByEveryCommand covers the script that asks
+// for a format the CLI does not have. Accepting the flag and then ignoring it
+// is worse than refusing it: a caller passing -o json to a write verb has no
+// way to notice it got prose instead, and a typo silently produces the default
+// format. Every command that takes --output has to reject a bad value, whether
+// or not it happens to print an object.
+func TestInvalidOutputFormatIsRejectedByEveryCommand(t *testing.T) {
+	commands := [][]string{
+		{"core", "location", "list"},
+		{"core", "location", "get", "id-1"},
+		{"core", "tag", "list"},
+		{"core", "tag", "get", "t-1"},
+		{"core", "tag", "create", "--name", "prod", "--service", "s-1"},
+		{"core", "tag", "delete", "t-1", "--service", "s-1", "--yes"},
+		{"core", "service", "list"},
+		{"core", "resource", "list"},
+		{"core", "resource", "get", "r-1"},
+		{"core", "resource", "tag", "list", "r-1"},
+		{"core", "resource", "tag", "add", "r-1", "prod"},
+		{"core", "resource", "tag", "remove", "r-1", "prod"},
+	}
+
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, `{"data":[]}`)
+
+			_, _, err := run(t, append(args,
+				"-o", "xml", "--token", "tok", "--api-base-url", srv.URL)...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, err.Error(), "invalid output format")
+			require.Empty(t, last.path, "a rejected flag value must not reach the Engine")
+		})
+	}
+}
+
+// TestConfirmationWithoutInputTellsTheUserAboutYes covers the CI runner or
+// cron job that pipes nothing to stdin. The prompt cannot be answered there,
+// so exiting 7 with a bare "canceled" leaves the operator guessing. The error
+// has to name the flag that makes the command usable unattended.
+func TestConfirmationWithoutInputTellsTheUserAboutYes(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	// No input at all, which is what a closed or empty stdin looks like.
+	_, _, err := runWithInput(t, "", "core", "tag", "delete", "t-1",
+		"--service", "s-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Contains(t, err.Error(), "--yes")
+	require.Empty(t, last.path, "a canceled delete must not reach the Engine")
+}
+
+func TestMissingTokenExitsWithAuthCode(t *testing.T) {
+	isolate(t)
+
+	_, _, err := run(t, "core", "location", "list")
+
+	require.ErrorContains(t, err, "not authenticated")
+	require.Equal(t, errmap.ExitAuth, errmap.ExitCode(err))
+}
+
+// TestEngineFailuresExitWithTheDocumentedCode walks the real command tree so
+// the exit-code contract is checked end to end, on both clients. The generic
+// and legacy commands must agree: the client a command happens to use is an
+// implementation detail, not something a script should have to know.
+func TestEngineFailuresExitWithTheDocumentedCode(t *testing.T) {
+	commands := map[string][]string{
+		"generic": {"core", "location", "get", "id-1"},
+		"legacy":  {"core", "tag", "get", "t-1"},
+	}
+
+	statuses := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{"unauthorized", http.StatusUnauthorized, errmap.ExitAuth},
+		{"forbidden", http.StatusForbidden, errmap.ExitAuth},
+		{"not found", http.StatusNotFound, errmap.ExitNotFound},
+		{"too many requests", http.StatusTooManyRequests, errmap.ExitRateLimited},
+		{"server error", http.StatusInternalServerError, errmap.ExitError},
+	}
+
+	// The Engine does not always repeat its status in the response body, and
+	// the exit code must not depend on whether it does. A bodyless response is
+	// ordinary for a failed DELETE, and a proxy or WAF in front of the Engine
+	// answers with HTML rather than JSON, so neither shape may change the
+	// classification either.
+	bodies := map[string]func(int) string{
+		"body echoes the status": func(status int) string {
+			return `{"error":{"code":` + strconv.Itoa(status) + `,"message":"nope"}}`
+		},
+		"body omits the status": func(int) string {
+			return `{"error":{"message":"nope"}}`
+		},
+		"body is empty": func(int) string {
+			return ""
+		},
+		"body is not json": func(int) string {
+			return `<html><body>Forbidden</body></html>`
+		},
+	}
+
+	for client, args := range commands {
+		for body, render := range bodies {
+			for _, tt := range statuses {
+				t.Run(client+" "+body+" "+tt.name, func(t *testing.T) {
+					isolate(t)
+					srv, _ := server(t, tt.status, render(tt.status))
+
+					_, _, err := run(t, append(args, "--token", "tok", "--api-base-url", srv.URL)...)
+
+					require.Error(t, err)
+					require.Equal(t, tt.want, errmap.ExitCode(err))
+				})
+			}
+		}
+	}
+}
+
+// TestTimeoutExitsWithTimeoutCode pins exit code 5 on both clients.
+func TestTimeoutExitsWithTimeoutCode(t *testing.T) {
+	commands := map[string][]string{
+		"generic": {"core", "location", "list"},
+		"legacy":  {"core", "tag", "list"},
+	}
+
+	for client, args := range commands {
+		t.Run(client, func(t *testing.T) {
+			isolate(t)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				<-r.Context().Done()
+			}))
+			t.Cleanup(srv.Close)
+
+			_, _, err := run(t, append(args,
+				"--timeout", "20ms", "--token", "tok", "--api-base-url", srv.URL)...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitTimeout, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), "raise it with --timeout")
+		})
+	}
+}
+
+// TestDeclinedConfirmationExitsWithCanceledCode pins exit code 7.
+func TestDeclinedConfirmationExitsWithCanceledCode(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderrText, err := runWithInput(t, "n\n", "core", "tag", "delete", "t-1",
+		"--service", "s-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Contains(t, stderrText, `delete tag "t-1"`)
+	require.Empty(t, last.path, "a declined confirmation must not reach the Engine")
+}
+
+// TestEngineFailureMessagesAreReadable pins that the legacy client's struct
+// dump never reaches the user.
+func TestEngineFailureMessagesAreReadable(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusNotFound, `{"error":{"code":404,"message":"tag not found"}}`)
+
+	_, _, err := run(t, "core", "tag", "get", "t-1", "--token", "tok", "--api-base-url", srv.URL)
+
+	require.Error(t, err)
+	require.Contains(t, errmap.Message(err), `reading tag "t-1"`)
+	require.Contains(t, errmap.Message(err), "tag not found (404)")
+	require.NotContains(t, errmap.Message(err), "received error from api")
+}
+
+// TestNounsAcceptTheirPlural pins the documented alias on every noun, whether
+// it is registry-driven or hand-written.
+func TestNounsAcceptTheirPlural(t *testing.T) {
+	t.Parallel()
+
+	plurals := []string{"locations", "resources", "tags", "services"}
+
+	for _, plural := range plurals {
+		t.Run(plural, func(t *testing.T) {
+			t.Parallel()
+
+			root := cli.NewRootCommand(cli.Deps{})
+
+			found, _, err := root.Find([]string{"core", plural, "list"})
+
+			require.NoError(t, err)
+			require.Equal(t, "list", found.Name())
+		})
+	}
+}
+
+// TestDeleteAcceptsDestroy pins the one documented verb alias. The design doc
+// promises it, and without a test the alias can be dropped without notice.
+func TestDeleteAcceptsDestroy(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusNoContent, "")
+
+	_, stderr, err := run(t, "core", "tag", "destroy", "t-1", "--service", "s-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, last.method)
+	require.Equal(t, "deleted tag t-1\n", stderr)
 }
 
 func TestConfigPath(t *testing.T) {
@@ -298,6 +525,7 @@ func TestConfigSetUnknownKey(t *testing.T) {
 	_, _, err := run(t, "config", "set", "nope", "x")
 	require.ErrorContains(t, err, `unknown config key "nope"`)
 	require.ErrorContains(t, err, "token, api_base_url")
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
 }
 
 func TestConfigGetUnknownKey(t *testing.T) {
@@ -305,6 +533,30 @@ func TestConfigGetUnknownKey(t *testing.T) {
 
 	_, _, err := run(t, "config", "get", "nope")
 	require.ErrorContains(t, err, `unknown config key "nope"`)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+}
+
+// TestExplicitInvalidAPIBaseURLIsAUsageMistake covers malformed values passed
+// directly as flags on both client paths. A bad stored value remains a config
+// error, but an invalid explicit flag is an invocation mistake.
+func TestExplicitInvalidAPIBaseURLIsAUsageMistake(t *testing.T) {
+	tests := [][]string{
+		{"core", "location", "list"},
+		{"core", "service", "list"},
+	}
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			isolate(t)
+
+			_, _, err := run(t, append(slices.Clone(args),
+				"--token", "tok", "--api-base-url", "not-a-url")...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.ErrorContains(t, err, "api-base-url")
+		})
+	}
 }
 
 func TestConfigViewTableMasksToken(t *testing.T) {
@@ -331,6 +583,21 @@ func TestConfigViewJSONMasksToken(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
 	require.Equal(t, "******ghij", got["token"])
 	require.Equal(t, "https://engine.example.com", got["api_base_url"])
+}
+
+// TestConfigViewYAMLMasksToken pins the structured YAML branch end to end.
+// JSON has its own test, but a regression routing YAML through the table branch
+// would otherwise leave the suite green.
+func TestConfigViewYAMLMasksToken(t *testing.T) {
+	path := isolate(t)
+	require.NoError(t, os.WriteFile(path,
+		[]byte("token: abcdefghij\napi_base_url: https://engine.example.com\n"), 0o600))
+
+	stdout, stderr, err := run(t, "config", "view", "-o", "yaml")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Equal(t, "api_base_url: https://engine.example.com\ntoken: '******ghij'\n", stdout)
+	require.NotContains(t, stdout, "abcdefghij")
 }
 
 func TestConfigCommandsNeedNoToken(t *testing.T) {

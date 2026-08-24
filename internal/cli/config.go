@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ProbstenHias/anexia-cli/internal/config"
-	"github.com/ProbstenHias/anexia-cli/internal/output"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 func newConfigCommand(opts *globalOptions) *cobra.Command {
@@ -105,7 +105,7 @@ func newConfigSetCommand(opts *globalOptions) *cobra.Command {
 			}
 
 			if err := cfg.Set(args[0], args[1]); err != nil {
-				return err
+				return errmap.Usage(err)
 			}
 
 			if err := config.Save(path, cfg); err != nil {
@@ -133,7 +133,7 @@ func newConfigGetCommand(opts *globalOptions) *cobra.Command {
 
 			value, err := cfg.Get(args[0])
 			if err != nil {
-				return err
+				return errmap.Usage(err)
 			}
 
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), value)
@@ -154,15 +154,15 @@ func newConfigViewCommand(opts *globalOptions) *cobra.Command {
 				return err
 			}
 
-			w, err := opts.writer(cmd.OutOrStdout())
+			w, err := opts.Writer(cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
 
 			redacted := cfg.Redacted()
 
-			if w.Format() == output.FormatJSON {
-				return w.JSON(map[string]string{
+			if w.Format().Structured() {
+				return w.Object(map[string]string{
 					"token":        redacted.Token,
 					"api_base_url": redacted.APIBaseURL,
 				})

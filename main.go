@@ -6,11 +6,15 @@ import (
 	"os"
 
 	"github.com/ProbstenHias/anexia-cli/internal/cli"
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 func main() {
-	if err := cli.Execute(cli.Deps{Stdout: os.Stdout, Stderr: os.Stderr}); err != nil {
-		fmt.Fprintf(os.Stderr, "anexia: %v\n", err)
-		os.Exit(1)
+	err := cli.Execute(cli.Deps{Stdout: os.Stdout, Stderr: os.Stderr})
+	if err == nil {
+		return
 	}
+
+	fmt.Fprintf(os.Stderr, "anexia: %s\n", errmap.Message(err))
+	os.Exit(errmap.ExitCode(err))
 }
