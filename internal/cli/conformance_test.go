@@ -107,6 +107,12 @@ var engineActions = map[string]string{
 	"anexia core tag create":          `creating tag "placeholder"`,
 	"anexia core tag delete":          `deleting tag "placeholder"`,
 	"anexia core service list":        "listing services",
+	"anexia network vlan list":        "listing vlans",
+	"anexia network vlan get":         `reading vlan "placeholder"`,
+	"anexia network prefix list":      "listing prefixes",
+	"anexia network prefix get":       `reading prefix "placeholder"`,
+	"anexia network address list":     "listing addresses",
+	"anexia network address get":      `reading address "placeholder"`,
 }
 
 // engineCommand reports whether cmd is a leaf that talks to the Engine.

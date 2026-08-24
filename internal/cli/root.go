@@ -199,6 +199,7 @@ func NewRootCommand(d Deps) *cobra.Command {
 
 	root.AddCommand(
 		newCoreCommand(opts),
+		newNetworkCommand(opts),
 		newConfigCommand(opts),
 		newVersionCommand(),
 		newMovedCommand("location", "anexia core location list"),

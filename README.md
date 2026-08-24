@@ -75,6 +75,8 @@ anexia core location list -o tsv --no-headers | cut -f2
 anexia core resource list --tag production -o json
 anexia core resource tag add <resource-id> production staging
 anexia core tag delete <tag-id> --service <service-id> --yes
+anexia network vlan list --location <location-id> --status Active
+anexia network address list --prefix <prefix-id> --version 4
 ```
 
 Every collection list takes `--page`, `--limit` and `--all`. Every `delete` asks for confirmation
@@ -158,8 +160,12 @@ cannot reach it: either the library says the Engine has no such operation, or it
 implemented one. The distinction matters to whoever picks the work up, so the tables say which
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
-Only the `core` group below is implemented. Everything after it is a roadmap of what the library
-can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
+The `core` and `network` groups below are implemented. `network` reads only for now: the resource
+registry the CLI builds commands from has no write verbs yet, and giving them to the prefix and
+address commands alone, which are hand-written against the older client, would leave the two
+halves of the CLI offering different verbs for the same noun. Everything after those two groups is
+a roadmap of what the library can reach, read off go-anxcloud v0.14.5 and not verified against the
+Engine.
 
 ### core
 
@@ -174,9 +180,9 @@ can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `network vlan` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `network prefix` | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| `network address` | [ ] | [ ] | [ ] | [ ] | [ ] | `reserve` [ ] |
+| `network vlan` | [x] | [x] | [ ] | [ ] | [ ] | `--status` and `--location` filters [x] |
+| `network prefix` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x] |
+| `network address` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x]; field filters [x]; `reserve` [ ] |
 
 ### vsphere
 

@@ -893,6 +893,9 @@ func TestIdentifiersThatAddressNoObjectAreRejected(t *testing.T) {
 		{"core", "tag", "get"},
 		{"core", "tag", "delete", "--service", "s-1", "--yes"},
 		{"core", "resource", "tag", "list"},
+		{"network", "vlan", "get"},
+		{"network", "prefix", "get"},
+		{"network", "address", "get"},
 	}
 
 	// Arguments that name nothing: empty, whitespace only, the current and
