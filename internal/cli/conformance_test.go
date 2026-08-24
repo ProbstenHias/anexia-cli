@@ -599,6 +599,40 @@ func TestConformanceNoCommandShadowsAGlobalFlag(t *testing.T) {
 	})
 }
 
+// TestConformanceGlobalFlags pins the public root contract, including defaults
+// and shorthand. A help-text substring check cannot catch a renamed flag or a
+// changed default.
+func TestConformanceGlobalFlags(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]struct {
+		defaultValue string
+		shorthand    string
+	}{
+		"api-base-url": {defaultValue: ""},
+		"config":       {defaultValue: ""},
+		"no-headers":   {defaultValue: "false"},
+		"output":       {defaultValue: "table", shorthand: "o"},
+		"timeout":      {defaultValue: "30s"},
+		"token":        {defaultValue: ""},
+		"yes":          {defaultValue: "false", shorthand: "y"},
+	}
+
+	root := cli.NewRootCommand(cli.Deps{})
+	got := map[string]struct {
+		defaultValue string
+		shorthand    string
+	}{}
+	root.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		got[f.Name] = struct {
+			defaultValue string
+			shorthand    string
+		}{defaultValue: f.DefValue, shorthand: f.Shorthand}
+	})
+
+	assert.Equal(t, want, got)
+}
+
 // TestConformanceEveryEngineCommandSupportsEveryOutputFormat walks every leaf
 // that talks to the Engine, because a command that renders nothing can still
 // accept a bogus -o and ignore it, which is only visible by trying each one.

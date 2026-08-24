@@ -31,7 +31,7 @@ func newCoreServiceListCommand(opts *globalOptions) *cobra.Command {
 		Short: "List services",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := resource.ValidatePaging(page, limit); err != nil {
+			if err := resource.ValidatePaging(page, limit, all); err != nil {
 				return err
 			}
 

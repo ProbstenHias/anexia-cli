@@ -340,6 +340,35 @@ func TestCoreResourceTagRemoveRemovesEveryTag(t *testing.T) {
 	require.Equal(t, "untagged resource r-1\n", stderr)
 }
 
+// TestGenericCommandsRejectHTTP300 covers an upstream boundary bug where the
+// generic client treats exactly 300 as success. A read must not render an empty
+// object, and a destructive command must not report success when no operation
+// happened.
+func TestGenericCommandsRejectHTTP300(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "read", args: []string{"core", "location", "get", "id-1"}},
+		{name: "write", args: []string{"core", "resource", "tag", "remove", "r-1", "prod"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+
+			srv, _ := server(t, http.StatusMultipleChoices, "")
+			stdout, stderr, err := run(t, append(slices.Clone(tt.args),
+				"--token", "tok", "--api-base-url", srv.URL)...)
+
+			require.Error(t, err, "HTTP 300 is not a successful Engine operation")
+			require.Equal(t, errmap.ExitError, errmap.ExitCode(err))
+			require.Empty(t, stdout)
+			require.NotContains(t, stderr, "untagged resource")
+		})
+	}
+}
+
 // TestCoreResourceGetDecodesTheEngineEnvelope covers the one Engine object in
 // the tree with a custom decode path: corev1.Resource flattens its nested tag
 // objects into names, and only on a get. A response-shape change there would
@@ -663,6 +692,36 @@ func TestCoreTagListInvalidPaging(t *testing.T) {
 
 	_, _, err = run(t, "core", "tag", "list", "--limit", "1001", "--token", "tok")
 	require.ErrorContains(t, err, "--limit 1001 must be between 1 and 1000")
+}
+
+// TestListAllRejectsAPageThatCannotBeIncremented covers the signed page
+// counter boundary on both clients. Wrapping MaxInt to a negative page can send
+// a request for a page the user never asked for and breaks end-of-walk checks.
+func TestListAllRejectsAPageThatCannotBeIncremented(t *testing.T) {
+	tests := []struct {
+		args []string
+		body string
+	}{
+		{args: []string{"core", "location", "list"}, body: `{"data":{"page":1,"limit":1,"data":[{"identifier":"l-1"}]}}`},
+		{args: []string{"core", "service", "list"}, body: `{"data":[{"identifier":"s-1","name":"svc"}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			isolate(t)
+
+			srv, last := server(t, http.StatusOK, tt.body)
+			args := append(slices.Clone(tt.args), "--all", "--page", strconv.Itoa(int(^uint(0)>>1)),
+				"--token", "tok", "--api-base-url", srv.URL)
+
+			_, _, err := run(t, args...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.ErrorContains(t, err, "too large for --all")
+			require.Empty(t, last.path, "an impossible walk must be rejected before a request")
+		})
+	}
 }
 
 func TestCoreTagGet(t *testing.T) {

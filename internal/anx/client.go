@@ -38,10 +38,7 @@ func (o Options) clientOptions() ([]client.Option, error) {
 		return nil, ErrNoToken
 	}
 
-	options := []client.Option{
-		client.TokenFromString(o.Token),
-		client.WithClient(engineHTTPClient()),
-	}
+	options := []client.Option{client.TokenFromString(o.Token)}
 	if o.BaseURL != "" {
 		options = append(options, client.BaseURL(o.BaseURL))
 	}
@@ -52,9 +49,15 @@ func (o Options) clientOptions() ([]client.Option, error) {
 // engineHTTPClient keeps API redirects observable as responses. Following one
 // can send the token to a login endpoint and replaces the useful 3xx with an
 // HTML decode error.
-func engineHTTPClient() *http.Client {
+
+func engineHTTPClient(guardGenericStatus bool) *http.Client {
+	var transport http.RoundTripper = errorBodyTransport{}
+	if guardGenericStatus {
+		transport = status300Transport{next: transport}
+	}
+
 	return &http.Client{
-		Transport: errorBodyTransport{},
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -82,6 +85,7 @@ func NewClient(opts Options) (client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	options = append(options, client.WithClient(engineHTTPClient(false)))
 
 	c, err := client.New(options...)
 	if err != nil {
@@ -134,6 +138,24 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return res, nil
 }
 
+// status300Transport closes the one error-status gap in go-anxcloud's generic
+// client, which checks for statuses greater than 300 instead of greater than or
+// equal to 300. The legacy client already rejects this status itself.
+type status300Transport struct {
+	next http.RoundTripper
+}
+
+func (t status300Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	res, err := t.next.RoundTrip(req)
+	if err != nil || res.StatusCode != http.StatusMultipleChoices {
+		return res, err
+	}
+
+	_ = res.Body.Close()
+
+	return nil, api.NewHTTPError(res.StatusCode, req.Method, req.URL, nil)
+}
+
 // failed mirrors the range go-anxcloud treats as an error response, so the
 // repair covers every status that would otherwise reach its error parsing.
 func failed(status int) bool {
@@ -147,6 +169,7 @@ func NewAPI(opts Options) (api.API, error) {
 	if err != nil {
 		return nil, err
 	}
+	options = append(options, client.WithClient(engineHTTPClient(true)))
 
 	a, err := api.NewAPI(api.WithClientOptions(options...))
 	if err != nil {

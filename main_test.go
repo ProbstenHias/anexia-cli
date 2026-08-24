@@ -20,6 +20,7 @@ func TestMainReportsClassifiedExitCodes(t *testing.T) {
 		wantCode int
 		wantText string
 	}{
+		{name: "success", args: []string{"version"}, wantCode: 0, wantText: "anexia dev"},
 		{name: "usage", args: []string{"bogus"}, wantCode: 2, wantText: "invalid usage:"},
 		{name: "authentication", args: []string{"core", "location", "list"}, wantCode: 3, wantText: "not authenticated:"},
 	}
@@ -40,6 +41,14 @@ func TestMainReportsClassifiedExitCodes(t *testing.T) {
 			cmd.Stderr = stderr
 
 			err := cmd.Run()
+			if tt.wantCode == 0 {
+				require.NoError(t, err)
+				require.Contains(t, stdout.String(), tt.wantText)
+				require.Empty(t, stderr.String())
+
+				return
+			}
+
 			var exitErr *exec.ExitError
 			require.ErrorAs(t, err, &exitErr)
 			require.Equal(t, tt.wantCode, exitErr.ExitCode())

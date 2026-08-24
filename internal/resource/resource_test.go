@@ -958,8 +958,8 @@ func TestListRejectsBadPaging(t *testing.T) {
 func TestValidatePagingAcceptsTheDefaults(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, resource.ValidatePaging(1, 50))
-	require.NoError(t, resource.ValidatePaging(1, resource.MaxLimit))
+	require.NoError(t, resource.ValidatePaging(1, 50, false))
+	require.NoError(t, resource.ValidatePaging(1, resource.MaxLimit, true))
 }
 
 func TestListReportsAPIFailure(t *testing.T) {

@@ -37,7 +37,7 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 	}
 
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-		if err := ValidatePaging(page, limit); err != nil {
+		if err := ValidatePaging(page, limit, all); err != nil {
 			return err
 		}
 
@@ -323,13 +323,17 @@ func ValidateIdentifier(what, value string) error {
 
 // ValidatePaging rejects out-of-range paging flags. Commands written against
 // the legacy client register the same flags by hand and share this check.
-func ValidatePaging(page, limit int) error {
+func ValidatePaging(page, limit int, all bool) error {
 	if page < 1 {
 		return errmap.Usagef("--page %d must be 1 or greater", page)
 	}
 
 	if limit < 1 || limit > MaxLimit {
 		return errmap.Usagef("--limit %d must be between 1 and %d", limit, MaxLimit)
+	}
+
+	if all && page > int(^uint(0)>>1)-maxPages {
+		return errmap.Usagef("--page %d is too large for --all", page)
 	}
 
 	return nil
