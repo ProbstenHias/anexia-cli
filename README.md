@@ -276,9 +276,11 @@ handle updates differently from the other four, so their write verbs may not all
 | Tag filters on every taggable resource | [ ] |
 | `--field` column selection | [ ] |
 
-The write verbs are specified in [docs/cli-design.md](docs/cli-design.md) but not implemented:
-every resource reachable today is read-only in the Engine, so there is nothing yet for them to
-act on. `core tag` is the exception and drives the legacy client directly.
+The write verbs are specified in [docs/cli-design.md](docs/cli-design.md) but the resource
+registry the CLI builds commands from does not implement them yet. Most resources reachable today
+are read-only in the Engine anyway. `core tag` is the exception and drives the legacy client
+directly; prefixes and addresses are writable in the library but wait for the registry, so that
+the two halves of the CLI keep offering the same verbs.
 
 ## Development
 

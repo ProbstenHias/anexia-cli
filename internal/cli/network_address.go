@@ -53,8 +53,10 @@ func addressFilters(flags *pflag.FlagSet) func() ([]param.Parameter, error) {
 	return func() ([]param.Parameter, error) {
 		// The Engine takes the version as a number and answers a value it
 		// does not know with every address rather than an error, so a typo
-		// would silently look like no filter at all.
-		if version != 0 && version != 4 && version != 6 {
+		// would silently look like no filter at all. Whether the flag was
+		// passed decides this rather than its value, because zero is a
+		// value the user can type and is no more a version than five is.
+		if flags.Changed("version") && version != 4 && version != 6 {
 			return nil, errmap.Usagef("--version %d must be 4 or 6", version)
 		}
 
@@ -83,8 +85,10 @@ func addressFilters(flags *pflag.FlagSet) func() ([]param.Parameter, error) {
 	}
 }
 
-// versionValue renders the IP version filter, with the unset zero rendering as
-// empty so it is dropped rather than sent as a literal 0.
+// versionValue renders an IP version. There is no version 0, so the zero a
+// dropped Engine field or an unset flag decodes to renders as empty: as a
+// filter it is then left out of the request, and in a table it says the Engine
+// did not send one rather than claiming a version that cannot exist.
 func versionValue(version int) string {
 	if version == 0 {
 		return ""
@@ -202,15 +206,16 @@ func newNetworkAddressGetCommand(opts *globalOptions) *cobra.Command {
 				return w.Object(info)
 			}
 
+			// Four columns, per the column budget in docs/cli-design.md.
+			// The VLAN and prefix an address sits in are one "-o json"
+			// away, and are less use at a glance than what it is.
 			return w.Table(
-				[]string{"identifier", "name", "version", "status", "vlan", "prefix"},
+				[]string{"identifier", "name", "version", "status"},
 				[][]string{{
 					info.ID,
 					info.Name,
-					strconv.Itoa(info.Version),
+					versionValue(info.Version),
 					info.Status,
-					info.VLANID,
-					info.PrefixID,
 				}},
 			)
 		},

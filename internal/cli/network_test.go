@@ -194,8 +194,8 @@ func TestNetworkPrefixGetTable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", last.path)
 	require.Equal(t,
-		"IDENTIFIER   NAME          VERSION   NETMASK   STATUS   LOCATION\n"+
-			"p-1          10.0.0.0/24   4         24        Active   ANX04\n",
+		"IDENTIFIER   NAME          VERSION   STATUS\n"+
+			"p-1          10.0.0.0/24   4         Active\n",
 		stdout)
 }
 
@@ -293,6 +293,19 @@ func TestNetworkAddressListRejectsUnknownVersion(t *testing.T) {
 	require.ErrorContains(t, err, "--version")
 }
 
+// An explicitly passed --version 0 is as wrong as --version 5: there is no IP
+// version 0. Reading it as "unset" would quietly widen the request to every
+// address instead of telling the user the value cannot be served.
+func TestNetworkAddressListRejectsExplicitZeroVersion(t *testing.T) {
+	isolate(t)
+
+	_, _, err := run(t, "network", "address", "list",
+		"--version", "0", "--token", "tok")
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.ErrorContains(t, err, "--version")
+}
+
 // The address client query-escapes its search term itself, exactly like the
 // prefix one, so escaping here too would double it on the wire.
 func TestNetworkAddressListSearchIsEscapedExactlyOnce(t *testing.T) {
@@ -325,8 +338,8 @@ func TestNetworkAddressGetTable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/api/ipam/v1/address.json/a-1", last.path)
 	require.Equal(t,
-		"IDENTIFIER   NAME       VERSION   STATUS   VLAN   PREFIX\n"+
-			"a-1          10.0.0.1   4         Active   v-1    p-1\n",
+		"IDENTIFIER   NAME       VERSION   STATUS\n"+
+			"a-1          10.0.0.1   4         Active\n",
 		stdout)
 }
 
@@ -338,9 +351,118 @@ func TestNetworkAddressGetTSV(t *testing.T) {
 	stdout, _, err := run(t, "network", "address", "get", "a-1", "-o", "tsv", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
 	require.Equal(t,
-		"identifier\tname\tversion\tstatus\tvlan\tprefix\n"+
-			"a-1\t10.0.0.1\t4\tActive\tv-1\tp-1\n",
+		"identifier\tname\tversion\tstatus\n"+
+			"a-1\t10.0.0.1\t4\tActive\n",
 		stdout)
+}
+
+// A field the Engine omits decodes as a zero value. For the IP version that
+// zero is not a real version, so showing it as "0" states something false.
+// Both nouns render the same field and have to agree on what absent looks
+// like.
+func TestNetworkGetRendersAnAbsentVersionAsBlank(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		body string
+		want string
+	}{
+		{
+			name: "prefix",
+			args: []string{"network", "prefix", "get", "p-1"},
+			body: `{"identifier":"p-1","name":"10.0.0.0/24","status":"Active"}`,
+			want: "identifier\tname\tversion\tstatus\n" +
+				"p-1\t10.0.0.0/24\t\tActive\n",
+		},
+		{
+			name: "address",
+			args: []string{"network", "address", "get", "a-1"},
+			body: `{"identifier":"a-1","name":"10.0.0.1","status":"Active"}`,
+			want: "identifier\tname\tversion\tstatus\n" +
+				"a-1\t10.0.0.1\t\tActive\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, _ := server(t, http.StatusOK, tt.body)
+
+			args := append(slices.Clone(tt.args), "-o", "tsv", "--token", "tok", "--api-base-url", srv.URL)
+
+			stdout, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, stdout)
+		})
+	}
+}
+
+// Identifiers reach the legacy clients through a URL path those clients build
+// without escaping, so a character that ends the path early would address a
+// different object and report success. core tag pins the same property.
+func TestNetworkGetEscapesTheIdentifier(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "prefix",
+			args: []string{"network", "prefix", "get", "p 1?x=y"},
+			want: "/api/ipam/v1/prefix.json/p 1?x=y",
+		},
+		{
+			name: "address",
+			args: []string{"network", "address", "get", "a 1?x=y"},
+			want: "/api/ipam/v1/address.json/a 1?x=y",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, `{"identifier":"x"}`)
+
+			args := append(slices.Clone(tt.args), "--token", "tok", "--api-base-url", srv.URL)
+
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, last.path)
+			require.Empty(t, last.query, "the identifier must not leak into the query string")
+		})
+	}
+}
+
+// The paging flags have to reach the address endpoints. Only --all is
+// exercised elsewhere, and it always starts at page one, so an explicit --page
+// or --limit could stop being forwarded without any test noticing.
+func TestNetworkAddressListPaging(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, twoAddresses)
+
+	_, _, err := run(t, "network", "address", "list",
+		"--page", "3", "--limit", "7", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Contains(t, last.query, "page=3")
+	require.Contains(t, last.query, "limit=7")
+}
+
+// Structured output renders the decoded object, not the table's column subset.
+// Conformance only checks that every format is accepted, so a regression to
+// tabular rendering here would otherwise go unseen.
+func TestNetworkAddressGetJSONKeepsFullObject(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK,
+		`{"identifier":"a-1","name":"10.0.0.1","version":4,"status":"Active",
+		  "description_internal":"internal note","rdns_name":"host.example.com"}`)
+
+	stdout, _, err := run(t, "network", "address", "get", "a-1", "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+	require.Equal(t, "internal note", got["description_internal"])
+	require.Equal(t, "host.example.com", got["rdns_name"])
 }
 
 func TestNetworkAddressesPluralAlias(t *testing.T) {

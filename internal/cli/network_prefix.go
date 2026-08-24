@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 	"go.anx.io/go-anxcloud/pkg/ipam/prefix"
@@ -116,29 +115,18 @@ func newNetworkPrefixGetCommand(opts *globalOptions) *cobra.Command {
 				return w.Object(info)
 			}
 
+			// Four columns, per the column budget in docs/cli-design.md.
+			// The netmask is already the tail of the name the Engine
+			// sends, and the location is one "-o json" away.
 			return w.Table(
-				[]string{"identifier", "name", "version", "netmask", "status", "location"},
+				[]string{"identifier", "name", "version", "status"},
 				[][]string{{
 					info.ID,
 					info.Name,
-					strconv.Itoa(info.IPVersion),
-					strconv.Itoa(info.NetworkMask),
+					versionValue(info.IPVersion),
 					info.Status,
-					prefixLocation(&info),
 				}},
 			)
 		},
 	}
-}
-
-// prefixLocation renders the one location a prefix sits in. A prefix belongs
-// to a single location in the Engine even though the field is an array, so a
-// column showing the first is the whole truth in every case the Engine
-// produces, and "-o json" carries the array either way.
-func prefixLocation(info *prefix.Info) string {
-	if len(info.Locations) == 0 {
-		return ""
-	}
-
-	return info.Locations[0].Code
 }

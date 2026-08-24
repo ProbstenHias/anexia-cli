@@ -138,6 +138,13 @@ Filter flags on `list` are named after the field they filter, in the singular: `
 `core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
 be plural, but the Engine does not currently accept any.
 
+Free-text search is the one thing that flag naming rule cannot cover, because there is no field to
+name it after: the Engine matches the term against whichever fields it likes. That flag is
+`--search`, and it is only on the commands whose endpoint offers it, `network prefix list` and
+`network address list`. Where an endpoint offers both, search and the field filters are separate
+endpoints that do not accept each other's parameters, so asking for both at once is a usage
+mistake rather than a request the CLI narrows on its own.
+
 Sort controls are not filters and are named for what they do: `--order` takes the field to sort
 by, `--descending` reverses it. Only `core tag list` has them, because it is the only endpoint
 that accepts sorting.
