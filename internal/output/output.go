@@ -233,27 +233,30 @@ func numberScalar(n json.Number) any {
 		return i
 	}
 
-	if !strings.ContainsAny(text, "eE") {
-		return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
-	}
-
-	if f, err := strconv.ParseFloat(text, 64); err == nil {
-		return &yaml.Node{Kind: yaml.ScalarNode, Value: exponentForm(f)}
-	}
-
-	return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: exponentForm(text)}
 }
 
-// exponentForm spells a float the way a YAML 1.1 resolver recognizes it, which
+// exponentForm spells a number the way a YAML 1.1 resolver recognizes it, which
 // needs a decimal point in the mantissa as well as a signed exponent: a reader
-// handed "1e+05" produces the string, handed "1.0e+05" produces the number.
-func exponentForm(f float64) string {
-	text := strconv.FormatFloat(f, 'e', -1, 64)
-
-	mantissa, exponent, found := strings.Cut(text, "e")
-	if !found || strings.Contains(mantissa, ".") {
+// handed "1e5" produces the string, handed "1.0e+5" produces the number.
+//
+// The digits are edited rather than reformatted through a float, because a
+// mantissa longer than float64 carries, or an exponent outside its range, would
+// otherwise be rounded, truncated or flushed to zero. Losing digits to make a
+// number readable is a worse trade than emitting one a reader treats as text.
+func exponentForm(text string) string {
+	mantissa, exponent, found := strings.Cut(strings.ToLower(text), "e")
+	if !found {
 		return text
 	}
 
-	return mantissa + ".0e" + exponent
+	if !strings.Contains(mantissa, ".") {
+		mantissa += ".0"
+	}
+
+	if !strings.HasPrefix(exponent, "+") && !strings.HasPrefix(exponent, "-") {
+		exponent = "+" + exponent
+	}
+
+	return mantissa + "e" + exponent
 }

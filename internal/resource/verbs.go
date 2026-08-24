@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -217,6 +218,10 @@ func newGetCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comma
 		Short: "Show one " + spec.Noun,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ValidateIdentifier(spec.Noun, args[0]); err != nil {
+				return err
+			}
+
 			w, err := env.Writer(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -287,6 +292,31 @@ func FetchPages[T any](notices io.Writer, plural string, page, limit int, all bo
 			return items, nil
 		}
 	}
+}
+
+// ValidateIdentifier rejects an argument that names no object.
+//
+// Both clients put an identifier straight into the URL path, so a value that is
+// empty or is only path punctuation does not address a member of the collection.
+// Empty leaves a trailing slash and addresses the collection itself; a relative
+// segment such as ".." is normalized away and addresses whatever sits above the
+// endpoint. Either can make the Engine act on something the caller never named,
+// and on a destructive verb that is the worst outcome available, so this refuses
+// before anything reaches the network. Escaping cannot help: percent-encoding a
+// dot leaves it a dot.
+//
+// What counts as a valid identifier is otherwise the Engine's business, so this
+// only rules out the values that cannot name one.
+func ValidateIdentifier(what, value string) error {
+	// An empty value is one empty segment, so the loop covers it too.
+	for _, segment := range strings.Split(value, "/") {
+		switch strings.TrimSpace(segment) {
+		case "", ".", "..":
+			return errmap.Usagef("%s %q does not name a %s", what, value, what)
+		}
+	}
+
+	return nil
 }
 
 // ValidatePaging rejects out-of-range paging flags. Commands written against

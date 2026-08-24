@@ -9,8 +9,10 @@ import (
 	"github.com/ProbstenHias/anexia-cli/internal/resource"
 )
 
-// newCoreServiceCommand builds "core service". The Engine exposes services
-// read-only and only in the legacy client, so this is a single list verb.
+// newCoreServiceCommand builds "core service". go-anxcloud reaches services
+// only through the legacy client and implements only a list there, so that is
+// the one verb. Whether the Engine offers more is not something the library
+// says.
 func newCoreServiceCommand(opts *globalOptions) *cobra.Command {
 	return resource.Noun("service", "services", "Work with Anexia services",
 		newCoreServiceListCommand(opts),

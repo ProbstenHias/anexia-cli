@@ -9,9 +9,12 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
 const twoLocations = `{"data":{"page":1,"total_pages":1,"total_items":2,"limit":50,"data":[
@@ -794,16 +797,103 @@ func TestCoreTagIdentifiersAddressExactlyTheObjectAsked(t *testing.T) {
 			require.Equal(t, "/api/core/v1/tags.json/"+id, last.path)
 
 			// And it must not have leaked into the query, where on a delete it
-			// would override the flag the user passed.
+			// would override the flag the user passed. Asserting the whole
+			// query rather than one key, because the smuggled key is whatever
+			// the identifier happens to contain.
 			values, err := url.ParseQuery(last.query)
 			require.NoError(t, err)
-			require.Empty(t, values.Get("other"))
 
 			if tt.name == "delete" {
-				require.Equal(t, "s-1", values.Get("service_identifier"))
+				require.Equal(t, url.Values{"service_identifier": {"s-1"}}, values)
+			} else {
+				require.Empty(t, last.query)
 			}
 		})
 	}
+}
+
+// TestIdentifiersThatAddressNoObjectAreRejected covers arguments that name no
+// object at all. An empty identifier addresses the collection rather than a
+// member of it, and a relative path segment walks out of the endpoint, so
+// sending either lets the Engine act on something the user never named. A
+// delete is the case that matters: it reported success.
+//
+// Every command taking an identifier is covered, on both clients, because this
+// has to be a property of the CLI rather than of whichever client a command
+// happens to use.
+func TestIdentifiersThatAddressNoObjectAreRejected(t *testing.T) {
+	commands := [][]string{
+		{"core", "location", "get"},
+		{"core", "resource", "get"},
+		{"core", "tag", "get"},
+		{"core", "tag", "delete", "--service", "s-1", "--yes"},
+		{"core", "resource", "tag", "list"},
+	}
+
+	// Arguments that name nothing: empty, whitespace only, the current and
+	// parent directory, and a bare separator.
+	ids := []string{"", "   ", ".", "..", "/", "../..", "a/../.."}
+
+	for _, cmd := range commands {
+		for _, id := range ids {
+			name := fmt.Sprintf("%s %q", strings.Join(cmd, " "), id)
+
+			t.Run(name, func(t *testing.T) {
+				isolate(t)
+
+				srv, last := server(t, http.StatusOK, `{"data":[]}`)
+
+				args := append(slices.Clone(cmd), id,
+					"--token", "tok", "--api-base-url", srv.URL)
+
+				_, _, err := run(t, args...)
+
+				require.Error(t, err, "an identifier naming no object must be refused")
+				require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+				require.Empty(t, last.path, "nothing may reach the Engine")
+			})
+		}
+	}
+}
+
+// TestRelationTagsThatAddressNoObjectAreRejected is the same rule for the tag
+// name in a relation verb. "remove r-1 .." resolved to the resource itself, so
+// a command that removes a tag issued a delete against its parent.
+func TestRelationTagsThatAddressNoObjectAreRejected(t *testing.T) {
+	for _, verb := range []string{"add", "remove"} {
+		for _, tag := range []string{"", "..", "/", "a/../.."} {
+			t.Run(fmt.Sprintf("%s %q", verb, tag), func(t *testing.T) {
+				isolate(t)
+
+				srv, last := server(t, http.StatusOK, `{}`)
+
+				_, _, err := run(t, "core", "resource", "tag", verb, "r-1", tag,
+					"--token", "tok", "--api-base-url", srv.URL)
+
+				require.Error(t, err, "a tag naming nothing must be refused")
+				require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+				require.Empty(t, last.path, "nothing may reach the Engine")
+			})
+		}
+	}
+}
+
+// TestRelationValuesStayInTheirOwnPathSegment covers the resource identifier
+// and tag name reaching the Engine intact. Both go into the URL path, and
+// neither may end the segment it belongs to.
+func TestRelationValuesStayInTheirOwnPathSegment(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, _, err := run(t, "core", "resource", "tag", "add", "r-1?x=1", "prod#frag",
+		"--token", "tok", "--api-base-url", srv.URL)
+
+	require.NoError(t, err)
+
+	// last.path is decoded, so this compares against the values as typed.
+	require.Equal(t, "/api/core/v1/resource.json/r-1?x=1/tags/prod#frag", last.path)
+	require.Empty(t, last.query)
 }
 
 // TestCoreTagDeleteEscapesTheServiceIdentifier is the delete-side counterpart:

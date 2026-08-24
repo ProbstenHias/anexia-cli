@@ -197,12 +197,20 @@ func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 		json string
 		want string
 	}{
-		{name: "exponent without a sign", json: `1e5`, want: "1.0e+05"},
+		{name: "exponent without a sign", json: `1e5`, want: "1.0e+5"},
 		{name: "exponent with a fraction", json: `1.5e10`, want: "1.5e+10"},
-		{name: "negative exponent", json: `1e-7`, want: "1.0e-07"},
+		{name: "negative exponent", json: `1e-7`, want: "1.0e-7"},
 		{name: "plain integer", json: `42`, want: "42"},
 		{name: "plain float", json: `0.1`, want: "0.1"},
 		{name: "beyond int64", json: `12345678901234567890123`, want: "12345678901234567890123"},
+
+		// Spelling a number for the reader must not cost digits. Routing
+		// these through float64 rounds the first, truncates the second and
+		// underflows the third to zero, which is worse than the string a
+		// YAML 1.1 reader would have produced.
+		{name: "exponent past float64 precision", json: `9007199254740993e0`, want: "9007199254740993.0e+0"},
+		{name: "exponent with a long mantissa", json: `1.23456789012345678901e10`, want: "1.23456789012345678901e+10"},
+		{name: "exponent below float64 range", json: `1e-400`, want: "1.0e-400"},
 	}
 
 	for _, tt := range tests {

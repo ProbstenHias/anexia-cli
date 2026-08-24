@@ -45,7 +45,7 @@ Every resource uses the same vocabulary. Nothing else is allowed at a leaf.
 | `get` | `<id>` | `Get` | One object by identifier. |
 | `create` | none, flags carry the payload | `Create` | |
 | `update` | `<id>`, flags carry the changes | `Get` then `Update` | |
-| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`. |
+| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. |
 
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the
 Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `create` that
@@ -149,6 +149,15 @@ changed.
 Every positional argument is named in the command's `Use` string, so help output shows
 `get <id>` and `tag add <resource-id> <tag>...`. Every leaf validates its argument count, so a
 stray argument is an error rather than being silently dropped.
+
+An argument that cannot name an object is refused before anything is sent. Both clients put an
+identifier into the URL path, so an empty one addresses the collection rather than a member of it,
+and a relative segment like `..` is normalized away and addresses whatever sits above the endpoint.
+Either lets the Engine act on something the caller never named, and on a `delete` that is the worst
+outcome available: `tag remove r-1 ..` issued a delete against the resource itself and reported
+success. Escaping cannot help, because percent-encoding a dot leaves it a dot. Anything else about
+what makes a valid identifier is the Engine's business, so the check only rules out the values that
+name nothing.
 
 ## Output
 
@@ -318,6 +327,12 @@ Query and path escaping are not interchangeable. A query escaper writes a space 
 path reader takes literally, so identifiers go through the path escaper and filters through the
 query one.
 
+Escaping is not only the legacy half's problem. The generic client escapes what it puts in a query,
+but it assembles a path from the object's own fields and joins the segments, which collapses a
+relative one. So a value the CLI hands either client as part of a path has to be escaped for its own
+segment and refused if it names nothing, which is why that check sits in the shared code rather than
+in the hand-written commands.
+
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents
 to work from. They still agree on everything observable: both walk from an arbitrary start page,
@@ -346,8 +361,11 @@ given. Only comparing it against the noun catches a typo. Both of those were liv
 every check in the file has been confirmed to fail against a deliberate violation, which is the
 third thing: a check nobody has seen fail is a guess.
 
-The two checks that need a server currently only walk the `core` group, so the first command in a
-new group lands outside them. Widen the prefix when that happens.
+A fourth thing decides how much a check is worth later: what it selects. The two checks that need a
+server used to walk commands whose path started with `anexia core`, which meant the first command in
+a new group would land outside them and neither would say a word. They now name the groups that do
+not reach the Engine and take everything else, so a new group is covered the day it appears and
+adding a local one is a deliberate edit.
 
 Two rules are checked by targeted tests rather than by walking the tree, because they need a
 server to observe: `--all` requesting every page exactly once from any starting page, and

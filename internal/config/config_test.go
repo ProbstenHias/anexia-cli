@@ -3,7 +3,9 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -105,6 +107,39 @@ func TestLoadRejectsUnknownKey(t *testing.T) {
 	require.ErrorContains(t, err, path)
 }
 
+// TestLoadKeepsTokensThatLookLikeOtherTypes covers a hand-written config file,
+// which the README invites by documenting the format. YAML resolves an unquoted
+// scalar by its own type rules, so a token made only of digits is a number by
+// the time it reaches the struct, and a long one loses digits to float64. The
+// user then sees a masked value that looks right while every request fails on
+// authentication, with nothing pointing at the file.
+func TestLoadKeepsTokensThatLookLikeOtherTypes(t *testing.T) {
+	tokens := []string{
+		"12345678901234567890123456789012",
+		"01234567890123456789012345678901",
+		"0755",
+		"0x1f",
+		"1e5",
+		"1_000",
+		"2024-01-02",
+		"true",
+		".inf",
+	}
+
+	for _, token := range tokens {
+		t.Run(token, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("token: "+token+"\n"), 0o600))
+
+			cfg, err := config.Load(path)
+			require.NoError(t, err)
+			require.Equal(t, token, cfg.Token)
+		})
+	}
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))
@@ -145,6 +180,32 @@ func TestMask(t *testing.T) {
 	require.Equal(t, "****", config.Mask("abc"))
 	require.Equal(t, "****", config.Mask("abcd"))
 	require.Equal(t, "*bcde", config.Mask("abcde"))
+}
+
+// TestMaskKeepsValidUTF8 covers a value that is not plain ASCII. Masking by
+// byte splits a multi-byte rune and emits a lone continuation byte, so the
+// output of the one function whose job is producing a safe string is not text.
+// That reaches stdout through "config view" and breaks a consumer of -o json.
+func TestMaskKeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	for _, s := range []string{"äöüß1", "tokenäöü", "日本語トークン", "🔑🔑🔑🔑🔑"} {
+		masked := config.Mask(s)
+
+		require.True(t, utf8.ValidString(masked), "Mask(%q) = %q is not valid UTF-8", s, masked)
+		require.True(t, strings.HasSuffix(s, lastRunes(masked, 4)),
+			"Mask(%q) = %q must end in the value's own last four characters", s, masked)
+	}
+}
+
+// lastRunes returns the final n runes of s.
+func lastRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+
+	return string(r[len(r)-n:])
 }
 
 func TestSetUnknownKey(t *testing.T) {

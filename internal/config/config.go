@@ -76,8 +76,20 @@ func Load(explicit string) (Config, error) {
 		return Config{}, err
 	}
 
+	// The path is the one koanf just read through the same resolution, so this
+	// opens no file the caller had not already asked for.
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path resolved by Path, not caller-supplied
+	if err != nil {
+		return Config{}, fmt.Errorf("reading config %s: %w", path, err)
+	}
+
+	// Decoded straight into the string fields rather than through koanf,
+	// whose parser resolves an unquoted scalar by YAML's type rules first.
+	// That turns a token of nothing but digits into a number and back into a
+	// different string, which fails authentication while looking correct in
+	// "config view". koanf is still used above, for the unknown-key check.
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	if err := goyaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)
 	}
 
@@ -187,13 +199,18 @@ func (c Config) Redacted() Config {
 func Mask(s string) string {
 	const visible = 4
 
+	// Counted in runes, not bytes: slicing a multi-byte value by byte splits a
+	// rune and emits a lone continuation byte, so the masked value would not
+	// be text.
+	r := []rune(s)
+
 	switch {
-	case s == "":
+	case len(r) == 0:
 		return ""
-	case len(s) <= visible:
+	case len(r) <= visible:
 		return strings.Repeat("*", visible)
 	default:
-		return strings.Repeat("*", len(s)-visible) + s[len(s)-visible:]
+		return strings.Repeat("*", len(r)-visible) + string(r[len(r)-visible:])
 	}
 }
 

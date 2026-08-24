@@ -34,7 +34,8 @@ var verbs = map[string]bool{
 	"remove": true,
 
 	// destroy is accepted as an alias of delete for users coming from the
-	// Engine's own vocabulary. It is never a command name.
+	// Engine's own vocabulary. It is never a command name, which aliasOnly
+	// enforces.
 	"destroy": true,
 
 	// Local commands that talk to the config file or the binary itself
@@ -64,6 +65,30 @@ var groupNames = map[string]bool{
 	"e5e":        true,
 	"frontier":   true,
 	"storage":    true,
+}
+
+// localGroups are the groups whose commands never reach the Engine. Everything
+// else does, so the checks that need a server derive their scope from this
+// rather than from a prefix: naming the exceptions means a new Engine group is
+// covered the day it lands, where an "anexia core " prefix would silently skip
+// it.
+var localGroups = map[string]bool{
+	"config": true,
+}
+
+// engineCommand reports whether cmd is a leaf that talks to the Engine.
+func engineCommand(cmd *cobra.Command) bool {
+	if cmd.HasSubCommands() || cmd.Hidden {
+		return false
+	}
+
+	for c := cmd; c.HasParent(); c = c.Parent() {
+		if localGroups[c.Name()] || !c.Parent().HasParent() && verbs[c.Name()] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // singular flags whether a name reads as a singular noun. Plurals are only
@@ -172,6 +197,26 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	// Without this the test passes when the tree has no leaf alias at all,
 	// which would make it look like the rule is enforced when it is not.
 	assert.Positive(t, checked, "the tree should have leaf aliases to check")
+}
+
+// aliasOnly are verbs the CLI answers to but never names a command after. They
+// exist for users arriving with another tool's vocabulary, so accepting one as
+// a command name would put two spellings of the same verb in the tree.
+var aliasOnly = map[string]bool{
+	"destroy": true,
+}
+
+func TestConformanceLeafNamesAreNotAliasOnlyVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range commands(t) {
+		if cmd.HasSubCommands() {
+			continue
+		}
+
+		assert.False(t, aliasOnly[cmd.Name()],
+			"%s: %q is only ever an alias, so the command itself must be named something else", path(cmd), cmd.Name())
+	}
 }
 
 func TestConformanceNounsAreSingular(t *testing.T) {
@@ -314,7 +359,7 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 	checked := 0
 
 	for _, cmd := range commands(t) {
-		if cmd.HasSubCommands() || !strings.HasPrefix(cmd.CommandPath(), "anexia core ") {
+		if !engineCommand(cmd) {
 			continue
 		}
 
@@ -330,6 +375,12 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 
 		action, _, found := strings.Cut(message, ": ")
 		require.True(t, found, "%s: %q must read as \"<action>: <cause>\"", full, message)
+
+		// Guarded before indexing: a message opening with the separator
+		// leaves no action, and panicking here would take down the whole
+		// package run and report nothing about the other commands.
+		require.NotEmpty(t, strings.Fields(action),
+			"%s: %q must name the action before the cause", full, message)
 
 		// The action names what the command was doing, so it reads as a
 		// gerund. Without this the check passes on any cause that happens
@@ -496,7 +547,7 @@ func TestConformanceEveryEngineCommandSupportsEveryOutputFormat(t *testing.T) {
 	checked := 0
 
 	for _, cmd := range commands(t) {
-		if cmd.HasSubCommands() || !strings.HasPrefix(cmd.CommandPath(), "anexia core ") {
+		if !engineCommand(cmd) {
 			continue
 		}
 

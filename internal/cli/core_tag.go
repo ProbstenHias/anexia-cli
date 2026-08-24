@@ -35,6 +35,35 @@ func pathValue(v string) string {
 	return url.PathEscape(v)
 }
 
+// pathValues escapes each value for its own path segment.
+func pathValues(vs []string) []string {
+	escaped := make([]string, 0, len(vs))
+	for _, v := range vs {
+		escaped = append(escaped, pathValue(v))
+	}
+
+	return escaped
+}
+
+// validateRelation rejects a resource identifier or tag name that addresses no
+// object. Both go into the URL path, and go-anxcloud builds that path from the
+// object's fields, so the CLI has to refuse here: by the time the library sees
+// them a relative segment has already been normalized away, which turned
+// "tag remove r-1 .." into a delete against the resource itself.
+func validateRelation(resourceID string, names []string) error {
+	if err := resource.ValidateIdentifier("resource", resourceID); err != nil {
+		return err
+	}
+
+	for _, name := range names {
+		if err := resource.ValidateIdentifier("tag", name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // newCoreTagCommand builds "core tag". Tags have no object in go-anxcloud's
 // generic pkg/apis tree, so these commands drive the legacy core/tags client
 // directly rather than going through the resource registry.
@@ -121,6 +150,10 @@ func newCoreTagGetCommand(opts *globalOptions) *cobra.Command {
 		Short: "Show one tag",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("tag", args[0]); err != nil {
+				return err
+			}
+
 			w, err := opts.Writer(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -229,6 +262,10 @@ func newCoreTagDeleteCommand(opts *globalOptions) *cobra.Command {
 		Short:   "Delete a tag",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("tag", args[0]); err != nil {
+				return err
+			}
+
 			if service == "" {
 				return errmap.Usagef("--service is required")
 			}
@@ -278,6 +315,10 @@ func newCoreResourceTagListCommand(opts *globalOptions) *cobra.Command {
 		Short: "List the tags of a resource",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("resource", args[0]); err != nil {
+				return err
+			}
+
 			w, err := opts.Writer(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -312,6 +353,10 @@ func newCoreResourceTagAddCommand(opts *globalOptions) *cobra.Command {
 		Short: "Add tags to a resource",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateRelation(args[0], args[1:]); err != nil {
+				return err
+			}
+
 			a, err := opts.API(cmd.Flags())
 			if err != nil {
 				return err
@@ -320,7 +365,7 @@ func newCoreResourceTagAddCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			if err := corev1.Tag(ctx, a, &corev1.Resource{Identifier: args[0]}, args[1:]...); err != nil {
+			if err := corev1.Tag(ctx, a, &corev1.Resource{Identifier: pathValue(args[0])}, pathValues(args[1:])...); err != nil {
 				return opts.Fail(fmt.Errorf("tagging resource %q: %w", args[0], err))
 			}
 
@@ -339,6 +384,10 @@ func newCoreResourceTagRemoveCommand(opts *globalOptions) *cobra.Command {
 		Short: "Remove tags from a resource",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateRelation(args[0], args[1:]); err != nil {
+				return err
+			}
+
 			a, err := opts.API(cmd.Flags())
 			if err != nil {
 				return err
@@ -347,7 +396,7 @@ func newCoreResourceTagRemoveCommand(opts *globalOptions) *cobra.Command {
 			ctx, cancel := opts.Context(cmd.Context())
 			defer cancel()
 
-			if err := corev1.Untag(ctx, a, &corev1.Resource{Identifier: args[0]}, args[1:]...); err != nil {
+			if err := corev1.Untag(ctx, a, &corev1.Resource{Identifier: pathValue(args[0])}, pathValues(args[1:])...); err != nil {
 				return opts.Fail(fmt.Errorf("untagging resource %q: %w", args[0], err))
 			}
 
