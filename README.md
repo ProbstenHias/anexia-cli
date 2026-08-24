@@ -246,6 +246,7 @@ the CLI is not settled yet.
 | `storage region` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage endpoint` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage backend` | [ ] | [ ] | [ ] | [ ] | [ ] | |
+| `storage server-interface` | [ ] | [ ] | [ ] | [ ] | [ ] | dynamic-volume API |
 
 The object storage API is marked beta in go-anxcloud, and `region`, `endpoint` and `backend`
 handle updates differently from the other four, so their write verbs may not all work out.

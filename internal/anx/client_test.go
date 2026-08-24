@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.anx.io/go-anxcloud/pkg/api"
 	corev1 "go.anx.io/go-anxcloud/pkg/apis/core/v1"
 	"go.anx.io/go-anxcloud/pkg/client"
 	"go.anx.io/go-anxcloud/pkg/core/service"
@@ -196,6 +198,41 @@ func TestNewClientDoesNotFollowAnErrorRedirect(t *testing.T) {
 	require.Zero(t, loginRequests, "an API client must not follow a redirect to a login page")
 }
 
+// TestNewAPIDoesNotFollowAnErrorRedirect is the generic-client counterpart.
+// Following a proxy redirect would send the Engine token to the login endpoint
+// and hide the original status behind an HTML decode error.
+func TestNewAPIDoesNotFollowAnErrorRedirect(t *testing.T) {
+	t.Parallel()
+
+	loginRequests := 0
+	loginAuth := ""
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			loginRequests++
+			loginAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte("<html>login</html>"))
+
+			return
+		}
+
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	a, err := anx.NewAPI(anx.Options{Token: "secret-token", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	err = a.Get(context.Background(), &corev1.Location{Identifier: "id-1"})
+	require.Error(t, err)
+
+	var httpErr api.HTTPError
+	require.ErrorAs(t, err, &httpErr, "the redirect status must survive as an HTTPError")
+	require.Equal(t, http.StatusFound, httpErr.StatusCode())
+	require.Zero(t, loginRequests, "the API client must not follow the redirect")
+	require.Empty(t, loginAuth, "the Engine token must never reach the login endpoint")
+}
+
 // TestNewClientKeepsTheEngineWording checks the other side of the transport:
 // when the Engine does send a usable error body, its message must reach the
 // user rather than being replaced by the generic status text.
@@ -241,6 +278,39 @@ func TestNewClientKeepsTheEngineWording(t *testing.T) {
 			require.Equal(t, "service not found", responseErr.ErrorData.Message)
 		})
 	}
+}
+
+// TestNewClientClassifiesACompleteErrorBodyBeforeEOF covers a chunked proxy
+// that writes one complete Engine error and then keeps the stream open. The
+// status and message are already available; waiting for EOF turns a not-found
+// into the command timeout instead.
+func TestNewClientClassifiesACompleteErrorBodyBeforeEOF(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"service not found"}}`))
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err = service.NewAPI(c).List(ctx, 1, 1)
+	require.Error(t, err)
+
+	var responseErr *client.ResponseError
+	require.ErrorAs(t, err, &responseErr, "a complete Engine error must classify before the stream closes")
+	require.Equal(t, http.StatusNotFound, responseErr.Response.StatusCode)
+	require.Equal(t, "service not found", responseErr.ErrorData.Message)
 }
 
 // TestNewClientLeavesSuccessfulResponsesAlone guards the transport against

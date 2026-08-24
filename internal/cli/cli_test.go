@@ -521,6 +521,21 @@ func TestConfigViewJSONMasksToken(t *testing.T) {
 	require.Equal(t, "https://engine.example.com", got["api_base_url"])
 }
 
+// TestConfigViewYAMLMasksToken pins the structured YAML branch end to end.
+// JSON has its own test, but a regression routing YAML through the table branch
+// would otherwise leave the suite green.
+func TestConfigViewYAMLMasksToken(t *testing.T) {
+	path := isolate(t)
+	require.NoError(t, os.WriteFile(path,
+		[]byte("token: abcdefghij\napi_base_url: https://engine.example.com\n"), 0o600))
+
+	stdout, stderr, err := run(t, "config", "view", "-o", "yaml")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Equal(t, "api_base_url: https://engine.example.com\ntoken: '******ghij'\n", stdout)
+	require.NotContains(t, stdout, "abcdefghij")
+}
+
 func TestConfigCommandsNeedNoToken(t *testing.T) {
 	isolate(t)
 
