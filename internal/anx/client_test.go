@@ -164,6 +164,38 @@ func TestNewClientClassifiesAStatusWithAnUnparseableBody(t *testing.T) {
 	}
 }
 
+// TestNewClientDoesNotFollowAnErrorRedirect covers a proxy redirecting an API
+// request to an HTML login page. Following it loses the original status and the
+// legacy client reports an HTML decode error instead of the redirect response.
+func TestNewClientDoesNotFollowAnErrorRedirect(t *testing.T) {
+	t.Parallel()
+
+	loginRequests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			loginRequests++
+			_, _ = w.Write([]byte("<html>login</html>"))
+
+			return
+		}
+
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+	require.Error(t, err)
+
+	var responseErr *client.ResponseError
+	require.ErrorAs(t, err, &responseErr, "the redirect status must survive as a ResponseError")
+	require.Equal(t, http.StatusFound, responseErr.Response.StatusCode)
+	require.Zero(t, loginRequests, "an API client must not follow a redirect to a login page")
+}
+
 // TestNewClientKeepsTheEngineWording checks the other side of the transport:
 // when the Engine does send a usable error body, its message must reach the
 // user rather than being replaced by the generic status text.

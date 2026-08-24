@@ -404,6 +404,7 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 		[]byte("token: tok\napi_base_url: "+srv.URL+"\n"), 0o600))
 
 	checked := 0
+	checkedActions := map[string]bool{}
 
 	for _, cmd := range commands(t) {
 		if !engineCommand(cmd) {
@@ -443,9 +444,14 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 			"%s: %q leaks the legacy client's struct dump", full, message)
 
 		checked++
+		checkedActions[full] = true
 	}
 
 	assert.Positive(t, checked, "the tree should have engine commands to check")
+	assert.Len(t, checkedActions, len(engineActions), "every declared action must belong to one Engine command")
+	for commandPath := range engineActions {
+		assert.True(t, checkedActions[commandPath], "declared action for missing command %s", commandPath)
+	}
 }
 
 func TestConformanceEveryCommandHasShortHelp(t *testing.T) {
@@ -526,17 +532,16 @@ func TestConformancePositionalArgumentsAreDocumented(t *testing.T) {
 		}
 
 		documented := len(regexp.MustCompile(`<[^>]+>`).FindAllString(cmd.Use, -1))
-		accepted := -1
-		for n := range 4 {
-			if cmd.ValidateArgs(make([]string, n)) == nil {
-				accepted = n
-				break
-			}
-		}
+		variadic := strings.Contains(cmd.Use, ">...")
 
-		require.NotEqual(t, -1, accepted, "%s: validator accepts no supported argument count", path(cmd))
-		assert.Equal(t, accepted, documented,
-			"%s: Use must name each required positional argument separately", path(cmd))
+		for n := range documented + 3 {
+			accepted := cmd.ValidateArgs(make([]string, n)) == nil
+			want := n == documented || variadic && n > documented
+
+			assert.Equal(t, want, accepted,
+				"%s: Use documents %d required arguments (variadic=%t), accepted %d=%t",
+				path(cmd), documented, variadic, n, accepted)
+		}
 	}
 }
 

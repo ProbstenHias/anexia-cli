@@ -229,7 +229,9 @@ func numbersAsScalars(v any) any {
 func numberScalar(n json.Number) any {
 	text := n.String()
 	if text == "-0" {
-		return &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+		// YAML resolves integer -0 as ordinary zero. A decimal point makes
+		// the consumer retain the IEEE-754 sign bit.
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: "-0.0"}
 	}
 
 	if i, err := strconv.ParseInt(text, 10, 64); err == nil {

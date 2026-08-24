@@ -3,10 +3,12 @@ package output_test
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/ProbstenHias/anexia-cli/internal/output"
 )
@@ -201,7 +203,7 @@ func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 		{name: "exponent with a fraction", json: `1.5e10`, want: "1.5e+10"},
 		{name: "negative exponent", json: `1e-7`, want: "1.0e-7"},
 		{name: "plain integer", json: `42`, want: "42"},
-		{name: "negative zero", json: `-0`, want: "-0"},
+		{name: "negative zero", json: `-0`, want: "-0.0"},
 		{name: "plain float", json: `0.1`, want: "0.1"},
 		{name: "beyond int64", json: `12345678901234567890123`, want: "12345678901234567890123"},
 
@@ -227,6 +229,22 @@ func TestWriterObjectYAMLKeepsNumbersNumeric(t *testing.T) {
 			require.Equal(t, "value: "+tt.want+"\n", buf.String())
 		})
 	}
+}
+
+// TestWriterObjectYAMLPreservesNegativeZero checks the value a YAML consumer
+// receives, not only its spelling. YAML resolves integer -0 to ordinary zero;
+// a decimal point is required to retain the sign bit.
+func TestWriterObjectYAMLPreservesNegativeZero(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	w := output.NewWriter(&buf, output.FormatYAML)
+
+	require.NoError(t, w.Object(map[string]any{"value": json.RawMessage(`-0`)}))
+
+	var decoded map[string]float64
+	require.NoError(t, yaml.Unmarshal(buf.Bytes(), &decoded))
+	require.True(t, math.Signbit(decoded["value"]), "negative zero became %q", buf.String())
 }
 
 // TestWriterKeepsOneRecordPerLine pins that a control byte inside a cell cannot

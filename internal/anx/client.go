@@ -68,7 +68,15 @@ func NewClient(opts Options) (client.Client, error) {
 		return nil, err
 	}
 
-	options = append(options, client.WithClient(&http.Client{Transport: errorBodyTransport{}}))
+	options = append(options, client.WithClient(&http.Client{
+		Transport: errorBodyTransport{},
+		// An API redirect is itself the response to classify. Following it
+		// can replace a useful 3xx status with an HTML login page that the
+		// legacy client reports as a JSON decode error.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}))
 
 	c, err := client.New(options...)
 	if err != nil {
