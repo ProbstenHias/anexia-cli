@@ -88,6 +88,20 @@ func Load(explicit string) (Config, error) {
 	// That turns a token of nothing but digits into a number and back into a
 	// different string, which fails authentication while looking correct in
 	// "config view". koanf is still used above, for the unknown-key check.
+	var document goyaml.Node
+	if err := goyaml.Unmarshal(raw, &document); err != nil {
+		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)
+	}
+	if len(document.Content) > 0 && len(document.Content[0].Content)%2 == 0 {
+		mapping := document.Content[0].Content
+		for i := 0; i < len(mapping); i += 2 {
+			if mapping[i+1].Tag == "!!null" {
+				return Config{}, fmt.Errorf("decoding config %s: config key %q is null; quote it to use a null-like string",
+					path, mapping[i].Value)
+			}
+		}
+	}
+
 	var cfg Config
 	if err := goyaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)

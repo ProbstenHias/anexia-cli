@@ -70,15 +70,15 @@ anexia core resource tag remove <resource-id> staging
 you are attaching an existing one. The distinction matters: `anexia core tag create` really does
 create a tag object, and `anexia core resource tag add` does not.
 
-Three planned operations have no honest CRUD spelling and are allowed as leaf
-verbs: `network address reserve`, `dns zone import`, and `storage bucket
-empty-and-delete`. The last name is deliberately explicit: go-anxcloud's
+Four planned operations have no honest CRUD spelling and are allowed as leaf
+verbs: `network address reserve`, `dns zone import`, `dns zone apply`, and
+`storage bucket empty-and-delete`. The last name is deliberately explicit: go-anxcloud's
 `EmptyAndDelete` permanently deletes the bucket after emptying it, so `empty`
 would promise safer behavior than the API provides. Adding any other action verb
 requires updating the design and the conformance vocabulary together.
 
 Verbs that do not appear anywhere, on purpose: `describe` (that is `get`), `show` (also `get`),
-`ls` (that is `list`), `rm` (that is `delete`), `edit`, `apply`, `patch`.
+`ls` (that is `list`), `rm` (that is `delete`), `edit`, `patch`.
 
 ## Flags
 

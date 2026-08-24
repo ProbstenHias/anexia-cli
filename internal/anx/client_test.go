@@ -300,6 +300,73 @@ func TestClientsClassifyARedirectBeforeBodyEOF(t *testing.T) {
 	}
 }
 
+// TestClientsClassifyFailureHeadersWithoutWaitingForEOF covers a proxy that
+// sends a known failure status and then never starts or closes the body. The
+// status must not turn into the command timeout.
+func TestClientsClassifyFailureHeadersWithoutWaitingForEOF(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(t *testing.T, baseURL string) error
+	}{
+		{
+			name: "legacy",
+			call: func(t *testing.T, baseURL string) error {
+				t.Helper()
+				c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: baseURL})
+				require.NoError(t, err)
+
+				_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+
+				return err
+			},
+		},
+		{
+			name: "generic",
+			call: func(t *testing.T, baseURL string) error {
+				t.Helper()
+				a, err := anx.NewAPI(anx.Options{Token: "tok", BaseURL: baseURL})
+				require.NoError(t, err)
+
+				return a.Get(context.Background(), &corev1.Location{Identifier: "id-1"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			release := make(chan struct{})
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				flusher, ok := w.(http.Flusher)
+				require.True(t, ok)
+				flusher.Flush()
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer func() {
+				close(release)
+				srv.Close()
+			}()
+
+			finished := make(chan error, 1)
+			go func() { finished <- tt.call(t, srv.URL) }()
+
+			select {
+			case err := <-finished:
+				require.Error(t, err)
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("client waited for EOF after receiving failure headers")
+			}
+		})
+	}
+}
+
 // TestNewClientKeepsTheEngineWording checks the other side of the transport:
 // when the Engine does send a usable error body, its message must reach the
 // user rather than being replaced by the generic status text.

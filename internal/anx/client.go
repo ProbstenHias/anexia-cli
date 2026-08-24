@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"go.anx.io/go-anxcloud/pkg/api"
 	"go.anx.io/go-anxcloud/pkg/client"
@@ -53,7 +54,9 @@ func (o Options) clientOptions() ([]client.Option, error) {
 func engineHTTPClient(guardGenericStatus bool) *http.Client {
 	var transport http.RoundTripper = errorBodyTransport{}
 	if guardGenericStatus {
-		transport = status300Transport{next: transport}
+		// The generic API classifies errors from status alone and never needs
+		// the legacy body repair. Avoid reading a body that may never end.
+		transport = status300Transport{next: http.DefaultTransport}
 	}
 
 	return &http.Client{
@@ -107,6 +110,8 @@ func NewClient(opts Options) (client.Client, error) {
 // minimal body keeps the status reachable.
 type errorBodyTransport struct{}
 
+const errorBodyReadTimeout = 100 * time.Millisecond
+
 func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil || !failed(res.StatusCode) {
@@ -129,16 +134,31 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return res, nil
 	}
 
-	var parsed client.ResponseError
-	decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
+	type decodeResult struct {
+		parsed client.ResponseError
+		err    error
+	}
+	decoded := make(chan decodeResult, 1)
+	go func() {
+		var parsed client.ResponseError
+		decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
+		decoded <- decodeResult{parsed: parsed, err: decodeErr}
+	}()
+
+	var result decodeResult
+	select {
+	case result = <-decoded:
+	case <-time.After(errorBodyReadTimeout):
+		result.err = io.ErrNoProgress
+	}
 	_ = res.Body.Close()
 
 	var body []byte
-	if decodeErr == nil {
+	if result.err == nil {
 		// Re-encoding the fields the library understands lets this transport
 		// return as soon as one complete error value arrives, even when a
 		// chunked proxy keeps the response stream open.
-		body, err = json.Marshal(parsed)
+		body, err = json.Marshal(result.parsed)
 	} else {
 		body, err = errorBody(res)
 	}

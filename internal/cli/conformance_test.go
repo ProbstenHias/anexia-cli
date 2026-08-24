@@ -37,6 +37,7 @@ var verbs = map[string]bool{
 	// Capability-specific operations that have no honest CRUD spelling.
 	"reserve":          true,
 	"import":           true,
+	"apply":            true,
 	"empty-and-delete": true,
 
 	// destroy is accepted as an alias of delete for users coming from the

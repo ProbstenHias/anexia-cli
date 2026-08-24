@@ -139,6 +139,23 @@ func TestLoadKeepsTokensThatLookLikeOtherTypes(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsNullLikeTokens covers YAML values that mean null rather than
+// text. Silently decoding one to the empty string clears credentials; users who
+// genuinely have such a token must quote it to make it a string.
+func TestLoadRejectsNullLikeTokens(t *testing.T) {
+	for _, token := range []string{"null", "Null", "NULL", "~"} {
+		t.Run(token, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("token: "+token+"\n"), 0o600))
+
+			_, err := config.Load(path)
+
+			require.ErrorContains(t, err, `config key "token" is null`)
+			require.ErrorContains(t, err, "quote it")
+		})
+	}
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))

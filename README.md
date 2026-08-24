@@ -195,7 +195,7 @@ can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `dns zone` | [ ] | [ ] | [ ] | [ ] | [ ] | `import` [ ] |
+| `dns zone` | [ ] | [ ] | [ ] | [ ] | [ ] | `import`/`apply` [ ] |
 | `dns record` | [ ] | - | [ ] | [ ] | [ ] | |
 
 ### kubernetes
