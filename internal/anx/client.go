@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"go.anx.io/go-anxcloud/pkg/api"
 	"go.anx.io/go-anxcloud/pkg/client"
@@ -110,8 +109,6 @@ func NewClient(opts Options) (client.Client, error) {
 // minimal body keeps the status reachable.
 type errorBodyTransport struct{}
 
-const errorBodyReadTimeout = 100 * time.Millisecond
-
 func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil || !failed(res.StatusCode) {
@@ -121,7 +118,7 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Redirects are classified by status alone. Reading their body first can
 	// block until the command timeout when a proxy sends headers and keeps a
 	// chunked login response open.
-	if res.StatusCode >= http.StatusMultipleChoices && res.StatusCode < http.StatusBadRequest {
+	if res.StatusCode >= http.StatusMultipleChoices && res.StatusCode < http.StatusBadRequest || res.ContentLength < 0 {
 		_ = res.Body.Close()
 		body, marshalErr := errorBody(res)
 		if marshalErr != nil {
@@ -134,41 +131,19 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return res, nil
 	}
 
-	type decodeResult struct {
-		parsed client.ResponseError
-		err    error
-	}
-	decode := func() decodeResult {
-		var parsed client.ResponseError
-		decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
-
-		return decodeResult{parsed: parsed, err: decodeErr}
-	}
-
-	var result decodeResult
-	if res.ContentLength >= 0 {
-		// A declared body length is already bounded by the command context,
-		// so let a slow but complete Engine error retain its wording and
-		// validation fields.
-		result = decode()
-	} else {
-		decoded := make(chan decodeResult, 1)
-		go func() { decoded <- decode() }()
-
-		select {
-		case result = <-decoded:
-		case <-time.After(errorBodyReadTimeout):
-			result.err = io.ErrNoProgress
-		}
-	}
+	var parsed client.ResponseError
+	decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
 	_ = res.Body.Close()
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
 
 	var body []byte
-	if result.err == nil {
+	if decodeErr == nil {
 		// Re-encoding the fields the library understands lets this transport
 		// return as soon as one complete error value arrives, even when a
 		// chunked proxy keeps the response stream open.
-		body, err = json.Marshal(result.parsed)
+		body, err = json.Marshal(parsed)
 	} else {
 		body, err = errorBody(res)
 	}

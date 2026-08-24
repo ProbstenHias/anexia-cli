@@ -177,6 +177,19 @@ func TestLoadRejectsNullOutsideADirectMapping(t *testing.T) {
 	}
 }
 
+// TestLoadAllowsAConcreteValueToOverrideMergedNull follows YAML merge
+// semantics: an explicit key wins over the merged default, so the effective
+// token is not null and must load normally.
+func TestLoadAllowsAConcreteValueToOverrideMergedNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("<<: &defaults\n  token: null\ntoken: good\n"), 0o600))
+
+	got, err := config.Load(path)
+
+	require.NoError(t, err)
+	require.Equal(t, "good", got.Token)
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))

@@ -415,11 +415,11 @@ func TestNewClientKeepsTheEngineWording(t *testing.T) {
 	}
 }
 
-// TestNewClientClassifiesACompleteErrorBodyBeforeEOF covers a chunked proxy
-// that writes one complete Engine error and then keeps the stream open. The
-// status and message are already available; waiting for EOF turns a not-found
-// into the command timeout instead.
-func TestNewClientClassifiesACompleteErrorBodyBeforeEOF(t *testing.T) {
+// TestNewClientClassifiesAnIndeterminateBodyBeforeEOF covers a chunked proxy
+// that keeps the stream open. With no declared length the client cannot know
+// whether more diagnostics are coming, so bounded status classification wins
+// over wording that may never finish.
+func TestNewClientClassifiesAnIndeterminateBodyBeforeEOF(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -445,7 +445,7 @@ func TestNewClientClassifiesACompleteErrorBodyBeforeEOF(t *testing.T) {
 	var responseErr *client.ResponseError
 	require.ErrorAs(t, err, &responseErr, "a complete Engine error must classify before the stream closes")
 	require.Equal(t, http.StatusNotFound, responseErr.Response.StatusCode)
-	require.Equal(t, "service not found", responseErr.ErrorData.Message)
+	require.Equal(t, "404 Not Found", responseErr.ErrorData.Message)
 }
 
 // TestNewClientKeepsADelayedDeclaredErrorBody covers a slow but complete Engine
@@ -477,6 +477,40 @@ func TestNewClientKeepsADelayedDeclaredErrorBody(t *testing.T) {
 	require.ErrorAs(t, err, &responseErr)
 	require.Equal(t, "validation failed", responseErr.ErrorData.Message)
 	require.Equal(t, map[string]string{"name": "required"}, responseErr.ErrorData.Validation)
+}
+
+// TestNewClientPreservesTheCommandTimeoutWhileReadingADeclaredBody covers a
+// server that promises bytes and never sends them. The command deadline must
+// remain the error; replacing the canceled read with a synthetic Engine body
+// misclassifies a timeout as an ordinary API failure.
+func TestNewClientPreservesTheCommandTimeoutWhileReadingADeclaredBody(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		srv.Close()
+	}()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = service.NewAPI(c).List(ctx, 1, 1)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestNewClientLeavesSuccessfulResponsesAlone guards the transport against
