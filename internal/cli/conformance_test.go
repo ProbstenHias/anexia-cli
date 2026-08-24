@@ -219,6 +219,9 @@ func TestConformanceLeavesUseKnownVerbs(t *testing.T) {
 func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	t.Parallel()
 
+	allowed := map[string]map[string]bool{
+		"anexia core tag delete": {"destroy": true},
+	}
 	checked := 0
 
 	for _, cmd := range commands(t) {
@@ -227,8 +230,8 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 		}
 
 		for _, alias := range cmd.Aliases {
-			assert.True(t, engineVerbs[alias],
-				"%s: alias %q is not a known verb, add it to the conformance list deliberately", path(cmd), alias)
+			assert.True(t, allowed[path(cmd)][alias],
+				"%s: alias %q is not approved for this command", path(cmd), alias)
 
 			checked++
 		}

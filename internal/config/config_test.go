@@ -203,6 +203,19 @@ func TestLoadRejectsANullAlias(t *testing.T) {
 	require.ErrorContains(t, err, `config key "token" is null`)
 }
 
+// TestLoadRejectsNullThroughAnAliasedKey covers a mapping key supplied through
+// an alias. YAML treats it as the real token key, so null validation must do the
+// same rather than inspecting only the alias node's empty Value.
+func TestLoadRejectsNullThroughAnAliasedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := "api_base_url: &token_key token\n*token_key: null\n"
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	_, err := config.Load(path)
+
+	require.ErrorContains(t, err, `config key "token" is null`)
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))

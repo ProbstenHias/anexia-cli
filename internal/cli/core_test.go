@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.anx.io/go-anxcloud/pkg/api"
 
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
@@ -340,11 +341,11 @@ func TestCoreResourceTagRemoveRemovesEveryTag(t *testing.T) {
 	require.Equal(t, "untagged resource r-1\n", stderr)
 }
 
-// TestGenericCommandsRejectHTTP300 covers an upstream boundary bug where the
-// generic client treats exactly 300 as success. A read must not render an empty
-// object, and a destructive command must not report success when no operation
+// TestGenericCommandsRejectEveryNon2xxStatus covers the upstream boundaries
+// where the generic client accepts 1xx and exactly 300. A read must not render
+// data, and a destructive command must not report success when no operation
 // happened.
-func TestGenericCommandsRejectHTTP300(t *testing.T) {
+func TestGenericCommandsRejectEveryNon2xxStatus(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -353,19 +354,24 @@ func TestGenericCommandsRejectHTTP300(t *testing.T) {
 		{name: "write", args: []string{"core", "resource", "tag", "remove", "r-1", "prod"}},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			isolate(t)
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusMultipleChoices} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%d %s", status, tt.name), func(t *testing.T) {
+				isolate(t)
 
-			srv, _ := server(t, http.StatusMultipleChoices, "")
-			stdout, stderr, err := run(t, append(slices.Clone(tt.args),
-				"--token", "tok", "--api-base-url", srv.URL)...)
+				srv, _ := server(t, status, `{"identifier":"unexpected"}`)
+				stdout, stderr, err := run(t, append(slices.Clone(tt.args),
+					"--token", "tok", "--api-base-url", srv.URL)...)
 
-			require.Error(t, err, "HTTP 300 is not a successful Engine operation")
-			require.Equal(t, errmap.ExitError, errmap.ExitCode(err))
-			require.Empty(t, stdout)
-			require.NotContains(t, stderr, "untagged resource")
-		})
+				require.Error(t, err, "HTTP %d is not a successful Engine operation", status)
+				require.Equal(t, errmap.ExitError, errmap.ExitCode(err))
+				var httpErr api.HTTPError
+				require.ErrorAs(t, err, &httpErr, "non-2xx status must survive as an HTTPError")
+				require.Equal(t, status, httpErr.StatusCode())
+				require.Empty(t, stdout)
+				require.NotContains(t, stderr, "untagged resource")
+			})
+		}
 	}
 }
 

@@ -55,7 +55,7 @@ func engineHTTPClient(guardGenericStatus bool) *http.Client {
 	if guardGenericStatus {
 		// The generic API classifies errors from status alone and never needs
 		// the legacy body repair. Avoid reading a body that may never end.
-		transport = status300Transport{next: http.DefaultTransport}
+		transport = genericStatusTransport{next: http.DefaultTransport}
 	}
 
 	return &http.Client{
@@ -163,16 +163,16 @@ func errorBody(res *http.Response) ([]byte, error) {
 	})
 }
 
-// status300Transport closes the one error-status gap in go-anxcloud's generic
-// client, which checks for statuses greater than 300 instead of greater than or
-// equal to 300. The legacy client already rejects this status itself.
-type status300Transport struct {
+// genericStatusTransport closes the error-status gaps in go-anxcloud's generic
+// client, which accepts 1xx and exactly 300. The legacy client already rejects
+// every non-2xx status itself.
+type genericStatusTransport struct {
 	next http.RoundTripper
 }
 
-func (t status300Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t genericStatusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := t.next.RoundTrip(req)
-	if err != nil || res.StatusCode != http.StatusMultipleChoices {
+	if err != nil || !failed(res.StatusCode) {
 		return res, err
 	}
 

@@ -130,7 +130,7 @@ func mappingValue(node *goyaml.Node, key string, seen map[*goyaml.Node]bool) (*g
 
 	// Explicit values override anything inherited through <<.
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
+		if resolveAlias(node.Content[i]).Value == key {
 			return resolveAlias(node.Content[i+1]), true
 		}
 	}
