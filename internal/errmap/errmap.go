@@ -182,11 +182,21 @@ func Message(err error) string {
 func readable(err error) string {
 	text := err.Error()
 
-	for _, responseErr := range responseErrors(err) {
-		text = strings.Replace(text, responseErr.Error(), engineMessage(responseErr), 1)
+	engineErrors := responseErrors(err)
+	for i := len(engineErrors) - 1; i >= 0; i-- {
+		text = replaceLast(text, engineErrors[i].Error(), engineMessage(engineErrors[i]))
 	}
 
 	return text
+}
+
+func replaceLast(text, old, replacement string) string {
+	i := strings.LastIndex(text, old)
+	if i < 0 {
+		return text
+	}
+
+	return text[:i] + replacement + text[i+len(old):]
 }
 
 // maxErrorDepth bounds the error tree walk, which joined errors make branch

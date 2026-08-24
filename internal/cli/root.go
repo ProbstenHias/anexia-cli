@@ -226,20 +226,45 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 
 	generators := []struct {
 		name string
+		long string
 		run  func(io.Writer, bool) error
 	}{
-		{name: "bash", run: func(w io.Writer, descriptions bool) error {
+		{name: "bash", long: `Generate a completion script for bash.
+
+This script depends on the bash-completion package.
+Load it in the current session with:
+
+  source <(anexia completion bash)
+
+Install it for future sessions under /etc/bash_completion.d/ on Linux or
+$(brew --prefix)/etc/bash_completion.d/ on macOS.`, run: func(w io.Writer, descriptions bool) error {
 			return root.GenBashCompletionV2(w, descriptions)
 		}},
-		{name: "zsh", run: func(w io.Writer, descriptions bool) error {
+		{name: "zsh", long: `Generate a completion script for zsh.
+
+Load it in the current session with:
+
+  source <(anexia completion zsh)
+
+Install it for future sessions in a directory on $fpath.`, run: func(w io.Writer, descriptions bool) error {
 			if descriptions {
 				return root.GenZshCompletion(w)
 			}
 
 			return root.GenZshCompletionNoDesc(w)
 		}},
-		{name: "fish", run: root.GenFishCompletion},
-		{name: "powershell", run: func(w io.Writer, descriptions bool) error {
+		{name: "fish", long: `Generate a completion script for fish.
+
+Load it in the current session with:
+
+  anexia completion fish | source
+
+Install it for future sessions under ~/.config/fish/completions/.`, run: root.GenFishCompletion},
+		{name: "powershell", long: `Generate a completion script for PowerShell.
+
+Load it in the current session with:
+
+  anexia completion powershell | Out-String | Invoke-Expression`, run: func(w io.Writer, descriptions bool) error {
 			if descriptions {
 				return root.GenPowerShellCompletionWithDesc(w)
 			}
@@ -252,6 +277,7 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 		shell := &cobra.Command{
 			Use:                   generator.name,
 			Short:                 "Generate completion for " + generator.name,
+			Long:                  generator.long,
 			Args:                  cobra.NoArgs,
 			ValidArgsFunction:     cobra.NoFileCompletions,
 			DisableFlagsInUseLine: true,
@@ -278,7 +304,7 @@ func newHelpCommand(root *cobra.Command) *cobra.Command {
 
 			var completions []cobra.Completion
 			for _, child := range target.Commands() {
-				if child.IsAvailableCommand() && strings.HasPrefix(child.Name(), toComplete) {
+				if (child.IsAvailableCommand() || child.Name() == "help") && strings.HasPrefix(child.Name(), toComplete) {
 					completions = append(completions, cobra.CompletionWithDesc(child.Name(), child.Short))
 				}
 			}

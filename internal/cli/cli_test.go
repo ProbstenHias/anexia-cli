@@ -188,9 +188,20 @@ func TestCompletionCommandsKeepCobraFunctionality(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, cmd.ValidArgsFunction, "%v must disable file completion", path)
 
-		_, directive := cmd.ValidArgsFunction(cmd, nil, "")
+		completions, directive := cmd.ValidArgsFunction(cmd, nil, "")
 		require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
+		if path[0] == "help" {
+			require.Contains(t, completions, "help\tHelp about any command")
+		}
 	}
+}
+
+func TestCompletionHelpKeepsInstallationGuidance(t *testing.T) {
+	stdout, _, err := run(t, "completion", "bash", "--help")
+
+	require.NoError(t, err)
+	require.Contains(t, stdout, "bash-completion")
+	require.Contains(t, stdout, "source <(anexia completion bash)")
 }
 
 // TestNonPositiveTimeoutIsAUsageMistake covers the user who passes a timeout

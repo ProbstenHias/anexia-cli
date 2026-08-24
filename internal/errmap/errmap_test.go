@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,6 +265,21 @@ func TestMessageRewritesEveryLegacyErrorInTheChain(t *testing.T) {
 	assert.NotContains(t, message, "received error from api")
 	assert.Contains(t, message, "slow down (429)")
 	assert.Contains(t, message, "tag not found (404)")
+}
+
+// TestMessageDoesNotRewriteUserContextThatLooksLikeAnErrorDump covers an
+// identifier equal to the legacy error's own text. The context must remain
+// verbatim while the wrapped cause is made readable.
+func TestMessageDoesNotRewriteUserContextThatLooksLikeAnErrorDump(t *testing.T) {
+	engineErr := responseError(http.StatusNotFound, "tag not found")
+	err := fmt.Errorf("reading tag %q: %w", engineErr.Error(), engineErr)
+
+	message := errmap.Message(err)
+
+	require.Contains(t, message, `reading tag "`+engineErr.Error()+`"`)
+	require.Contains(t, message, "tag not found (404)")
+	require.Equal(t, 1, strings.Count(message, "received error from api:"),
+		"only the user-supplied identifier should retain the dump-like text")
 }
 
 func TestMessageRewritesLegacyErrorWithoutMessage(t *testing.T) {
