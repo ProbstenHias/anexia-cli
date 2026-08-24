@@ -154,6 +154,9 @@ func TestUsageMistakesExitWithUsageCode(t *testing.T) {
 		{"argument to a group", []string{"config", "view", "extra"}, "unknown command"},
 		{"invalid output format", []string{"core", "location", "list", "-o", "xml"}, "invalid output format"},
 		{"invalid page", []string{"core", "location", "list", "--page", "0"}, "--page 0 must be"},
+		{"argument to completion", []string{"completion", "bash", "extra"}, `unknown command "extra"`},
+		{"unknown completion shell", []string{"completion", "bogus"}, `unknown command "bogus"`},
+		{"unknown help topic", []string{"help", "bogus"}, `unknown command "bogus"`},
 	}
 
 	for _, tt := range tests {

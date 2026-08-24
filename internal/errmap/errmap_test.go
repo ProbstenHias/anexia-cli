@@ -182,6 +182,32 @@ func TestExitCodeFromLegacyStatusWithoutBodyCode(t *testing.T) {
 	}
 }
 
+// TestExitCodeFindsAStatusInEveryJoinedBranch covers a later legacy Engine
+// error carrying the actionable class. errors.As returns only the first match
+// of a type, so a 500 branch must not hide a joined 429, 404 or 401.
+func TestExitCodeFindsAStatusInEveryJoinedBranch(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{name: "rate limited", status: http.StatusTooManyRequests, want: errmap.ExitRateLimited},
+		{name: "not found", status: http.StatusNotFound, want: errmap.ExitNotFound},
+		{name: "unauthorized", status: http.StatusUnauthorized, want: errmap.ExitAuth},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := errors.Join(
+				responseError(http.StatusInternalServerError, "first"),
+				responseError(tt.status, "actionable"),
+			)
+
+			require.Equal(t, tt.want, errmap.ExitCode(err))
+		})
+	}
+}
+
 func TestMessageReportsTheStatusWithoutABodyCode(t *testing.T) {
 	t.Parallel()
 

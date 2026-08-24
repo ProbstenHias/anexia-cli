@@ -201,11 +201,79 @@ func NewRootCommand(d Deps) *cobra.Command {
 		newConfigCommand(opts),
 		newVersionCommand(),
 		newMovedCommand("location", "anexia core location list"),
+		newCompletionCommand(root),
 	)
+	help := newHelpCommand(root)
+	root.SetHelpCommand(help)
+	root.AddCommand(help)
 
 	markUsageErrors(root)
 
 	return root
+}
+
+func newCompletionCommand(root *cobra.Command) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion",
+		Short: "Generate a shell completion script",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	generators := []struct {
+		name string
+		run  func(io.Writer) error
+	}{
+		{name: "bash", run: root.GenBashCompletion},
+		{name: "zsh", run: root.GenZshCompletion},
+		{name: "fish", run: func(w io.Writer) error { return root.GenFishCompletion(w, true) }},
+		{name: "powershell", run: root.GenPowerShellCompletion},
+	}
+	for _, generator := range generators {
+		cmd.AddCommand(&cobra.Command{
+			Use:   generator.name,
+			Short: "Generate completion for " + generator.name,
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				return generator.run(cmd.OutOrStdout())
+			},
+		})
+	}
+
+	return cmd
+}
+
+func newHelpCommand(root *cobra.Command) *cobra.Command {
+	return &cobra.Command{
+		Use:   "help [command]",
+		Short: "Help about any command",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return nil
+			}
+
+			target, remaining, err := root.Find(args)
+			if err != nil {
+				return err
+			}
+			if len(remaining) > 0 {
+				return fmt.Errorf("unknown command %q for %q", remaining[0], target.CommandPath())
+			}
+
+			return nil
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return root.Help()
+			}
+
+			target, _, _ := root.Find(args)
+
+			return target.Help()
+		},
+	}
 }
 
 // newMovedCommand points a command that used to exist at its replacement.

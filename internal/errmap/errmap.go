@@ -110,14 +110,34 @@ func isRateLimited(err error) bool {
 // returns api.HTTPError, the legacy one returns *client.ResponseError. Both are
 // checked so a command's exit code does not depend on which client it uses.
 func hasStatus(err error, status int) bool {
-	var httpErr api.HTTPError
-	if errors.As(err, &httpErr) {
-		return httpErr.StatusCode() == status
+	return hasStatusInTree(err, status, maxErrorDepth)
+}
+
+func hasStatusInTree(err error, status, depth int) bool {
+	if err == nil || depth <= 0 {
+		return false
 	}
 
-	var responseErr *client.ResponseError
-	if errors.As(err, &responseErr) {
-		return legacyStatus(responseErr) == status
+	switch e := err.(type) { //nolint:errorlint // every branch must be inspected, not only the first matching type
+	case api.HTTPError:
+		if e.StatusCode() == status {
+			return true
+		}
+	case *client.ResponseError:
+		if legacyStatus(e) == status {
+			return true
+		}
+	}
+
+	switch e := err.(type) { //nolint:errorlint // walking the tree needs the concrete unwrap shapes
+	case interface{ Unwrap() []error }:
+		for _, wrapped := range e.Unwrap() {
+			if hasStatusInTree(wrapped, status, depth-1) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasStatusInTree(e.Unwrap(), status, depth-1)
 	}
 
 	return false
