@@ -138,18 +138,28 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		parsed client.ResponseError
 		err    error
 	}
-	decoded := make(chan decodeResult, 1)
-	go func() {
+	decode := func() decodeResult {
 		var parsed client.ResponseError
 		decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
-		decoded <- decodeResult{parsed: parsed, err: decodeErr}
-	}()
+
+		return decodeResult{parsed: parsed, err: decodeErr}
+	}
 
 	var result decodeResult
-	select {
-	case result = <-decoded:
-	case <-time.After(errorBodyReadTimeout):
-		result.err = io.ErrNoProgress
+	if res.ContentLength >= 0 {
+		// A declared body length is already bounded by the command context,
+		// so let a slow but complete Engine error retain its wording and
+		// validation fields.
+		result = decode()
+	} else {
+		decoded := make(chan decodeResult, 1)
+		go func() { decoded <- decode() }()
+
+		select {
+		case result = <-decoded:
+		case <-time.After(errorBodyReadTimeout):
+			result.err = io.ErrNoProgress
+		}
 	}
 	_ = res.Body.Close()
 

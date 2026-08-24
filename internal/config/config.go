@@ -92,14 +92,13 @@ func Load(explicit string) (Config, error) {
 	if err := goyaml.Unmarshal(raw, &document); err != nil {
 		return Config{}, fmt.Errorf("decoding config %s: %w", path, err)
 	}
-	if len(document.Content) > 0 && len(document.Content[0].Content)%2 == 0 {
-		mapping := document.Content[0].Content
-		for i := 0; i < len(mapping); i += 2 {
-			if mapping[i+1].Tag == "!!null" {
-				return Config{}, fmt.Errorf("decoding config %s: config key %q is null; quote it to use a null-like string",
-					path, mapping[i].Value)
-			}
+	if key, found := nullKey(&document, "", map[*goyaml.Node]bool{}); found {
+		if key == "" {
+			return Config{}, fmt.Errorf("decoding config %s: config document is null", path)
 		}
+
+		return Config{}, fmt.Errorf("decoding config %s: config key %q is null; quote it to use a null-like string",
+			path, key)
 	}
 
 	var cfg Config
@@ -108,6 +107,40 @@ func Load(explicit string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// nullKey returns the key whose value resolves to YAML null, following aliases
+// and merge mappings. A shallow mapping scan misses both a null document and a
+// token inherited through a merge alias.
+func nullKey(node *goyaml.Node, key string, seen map[*goyaml.Node]bool) (string, bool) {
+	if node == nil || seen[node] {
+		return "", false
+	}
+	seen[node] = true
+
+	if node.Tag == "!!null" {
+		return key, true
+	}
+	if node.Alias != nil {
+		return nullKey(node.Alias, key, seen)
+	}
+	if node.Kind == goyaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if foundKey, found := nullKey(node.Content[i+1], node.Content[i].Value, seen); found {
+				return foundKey, true
+			}
+		}
+
+		return "", false
+	}
+
+	for _, child := range node.Content {
+		if foundKey, found := nullKey(child, key, seen); found {
+			return foundKey, true
+		}
+	}
+
+	return "", false
 }
 
 // validateKeys rejects keys koanf would otherwise silently ignore.

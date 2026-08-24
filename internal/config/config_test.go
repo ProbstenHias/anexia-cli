@@ -156,6 +156,27 @@ func TestLoadRejectsNullLikeTokens(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsNullOutsideADirectMapping covers YAML shapes that bypass a
+// top-level key/value scan: a null document and a null token inherited through
+// a merge alias. Both otherwise clear credentials silently.
+func TestLoadRejectsNullOutsideADirectMapping(t *testing.T) {
+	tests := map[string]string{ //nolint:gosec // G101: YAML fixtures, not credentials.
+		"null document": "null\n",
+		"merged token":  "<<: &defaults\n  token: null\n",
+	}
+
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+			_, err := config.Load(path)
+
+			require.ErrorContains(t, err, "null")
+		})
+	}
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))

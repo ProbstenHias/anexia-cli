@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -445,6 +446,37 @@ func TestNewClientClassifiesACompleteErrorBodyBeforeEOF(t *testing.T) {
 	require.ErrorAs(t, err, &responseErr, "a complete Engine error must classify before the stream closes")
 	require.Equal(t, http.StatusNotFound, responseErr.Response.StatusCode)
 	require.Equal(t, "service not found", responseErr.ErrorData.Message)
+}
+
+// TestNewClientKeepsADelayedDeclaredErrorBody covers a slow but complete Engine
+// response with a known length. The command timeout already bounds that read;
+// an extra transport deadline would discard the message and validation detail.
+func TestNewClientKeepsADelayedDeclaredErrorBody(t *testing.T) {
+	t.Parallel()
+
+	body := `{"error":{"code":422,"message":"validation failed","validation":{"name":"required"}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		flusher.Flush()
+		time.Sleep(180 * time.Millisecond)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c, err := anx.NewClient(anx.Options{Token: "tok", BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	_, err = service.NewAPI(c).List(context.Background(), 1, 1)
+	require.Error(t, err)
+
+	var responseErr *client.ResponseError
+	require.ErrorAs(t, err, &responseErr)
+	require.Equal(t, "validation failed", responseErr.ErrorData.Message)
+	require.Equal(t, map[string]string{"name": "required"}, responseErr.ErrorData.Validation)
 }
 
 // TestNewClientLeavesSuccessfulResponsesAlone guards the transport against

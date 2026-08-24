@@ -220,9 +220,10 @@ can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 | `lbaas rule` | [ ] | [ ] | [ ] | [ ] | [ ] |
 | `lbaas cluster` | [ ] | [ ] | [ ] | [ ] | [ ] |
 | `lbaas node` | [ ] | [ ] | [ ] | [ ] | [ ] |
+| `lbaas v2 load-balancer` | [ ] | [ ] | [ ] | [ ] | [ ] |
 
-The first seven come from the LBaaS v1 API, `cluster` and `node` from v2. How they are grouped in
-the CLI is not settled yet.
+The first seven come from the LBaaS v1 API; `cluster`, `node` and the distinct v2 load balancer
+come from v2. How the two versions are grouped in the CLI is not settled yet.
 
 ### e5e and frontier
 
