@@ -166,7 +166,7 @@ can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `core location` | [x] | [x] | - | - | - | read-only in the Engine |
-| `core resource` | [x] | [x] | - | - | - | update and delete unimplemented in the library |
+| `core resource` | [x] | [x] | - | - | - | `tag list`/`add`/`remove` [x]; update and delete unimplemented in the library |
 | `core tag` | [x] | [x] | [x] | - | [x] | |
 | `core service` | [x] | - | - | - | - | the library implements only list |
 
@@ -239,7 +239,7 @@ the CLI is not settled yet.
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `storage bucket` | [ ] | [ ] | [ ] | [ ] | [ ] | `empty` [ ] |
+| `storage bucket` | [ ] | [ ] | [ ] | [ ] | [ ] | `empty-and-delete` [ ] |
 | `storage tenant` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage user` | [ ] | [ ] | [ ] | [ ] | [ ] | |
 | `storage key` | [ ] | [ ] | [ ] | [ ] | [ ] | |

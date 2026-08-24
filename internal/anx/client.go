@@ -113,6 +113,22 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return res, err
 	}
 
+	// Redirects are classified by status alone. Reading their body first can
+	// block until the command timeout when a proxy sends headers and keeps a
+	// chunked login response open.
+	if res.StatusCode >= http.StatusMultipleChoices && res.StatusCode < http.StatusBadRequest {
+		_ = res.Body.Close()
+		body, marshalErr := errorBody(res)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+
+		res.Body = io.NopCloser(bytes.NewReader(body))
+		res.ContentLength = int64(len(body))
+
+		return res, nil
+	}
+
 	var parsed client.ResponseError
 	decodeErr := json.NewDecoder(res.Body).Decode(&parsed)
 	_ = res.Body.Close()
@@ -124,9 +140,7 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// chunked proxy keeps the response stream open.
 		body, err = json.Marshal(parsed)
 	} else {
-		body, err = json.Marshal(map[string]any{
-			"error": map[string]any{"code": res.StatusCode, "message": res.Status},
-		})
+		body, err = errorBody(res)
 	}
 	if err != nil {
 		return nil, err
@@ -136,6 +150,12 @@ func (errorBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res.ContentLength = int64(len(body))
 
 	return res, nil
+}
+
+func errorBody(res *http.Response) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"error": map[string]any{"code": res.StatusCode, "message": res.Status},
+	})
 }
 
 // status300Transport closes the one error-status gap in go-anxcloud's generic
