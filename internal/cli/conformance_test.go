@@ -17,10 +17,8 @@ import (
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
-// verbs are the only command names allowed at a leaf of the command tree. The
-// CLI's promise is that every resource is driven by the same small vocabulary,
-// so a new verb must be added here deliberately rather than by accident.
-var verbs = map[string]bool{
+// engineVerbs are the command names any Engine resource may use.
+var engineVerbs = map[string]bool{
 	// The five standard verbs every resource supports as far as the Engine
 	// allows.
 	"list":   true,
@@ -34,22 +32,29 @@ var verbs = map[string]bool{
 	"add":    true,
 	"remove": true,
 
-	// Capability-specific operations that have no honest CRUD spelling.
-	"reserve":          true,
-	"import":           true,
-	"apply":            true,
-	"empty-and-delete": true,
-
 	// destroy is accepted as an alias of delete for users coming from the
 	// Engine's own vocabulary. It is never a command name, which aliasOnly
 	// enforces.
 	"destroy": true,
+}
 
+// specialEngineActions scope capability-specific verbs to the one resource
+// whose API exposes them. An allowlist containing only the word would let any
+// resource acquire the verb unnoticed.
+var specialEngineActions = map[string]string{
+	"reserve":          "anexia network address reserve",
+	"import":           "anexia dns zone import",
+	"apply":            "anexia dns zone apply",
+	"empty-and-delete": "anexia storage bucket empty-and-delete",
+}
+
+var localVerbs = map[string]bool{
 	// Local commands that talk to the config file or the binary itself
 	// rather than to the Engine.
 	"path":    true,
 	"init":    true,
 	"set":     true,
+	"get":     true,
 	"view":    true,
 	"version": true,
 	"help":    true,
@@ -111,7 +116,7 @@ func engineCommand(cmd *cobra.Command) bool {
 	}
 
 	for c := cmd; c.HasParent(); c = c.Parent() {
-		if localGroups[c.Name()] || !c.Parent().HasParent() && verbs[c.Name()] {
+		if localGroups[c.Name()] || !c.Parent().HasParent() && !c.HasSubCommands() {
 			return false
 		}
 	}
@@ -197,7 +202,14 @@ func TestConformanceLeavesUseKnownVerbs(t *testing.T) {
 			continue
 		}
 
-		assert.True(t, verbs[cmd.Name()], "%s: %q is not a known verb, add it to the conformance list deliberately", path(cmd), cmd.Name())
+		if engineCommand(cmd) {
+			allowed := engineVerbs[cmd.Name()] || specialEngineActions[cmd.Name()] == path(cmd)
+			assert.True(t, allowed, "%s: %q is not allowed on this Engine resource", path(cmd), cmd.Name())
+
+			continue
+		}
+
+		assert.True(t, localVerbs[cmd.Name()], "%s: %q is not a known local command", path(cmd), cmd.Name())
 	}
 }
 
@@ -215,7 +227,7 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 		}
 
 		for _, alias := range cmd.Aliases {
-			assert.True(t, verbs[alias],
+			assert.True(t, engineVerbs[alias],
 				"%s: alias %q is not a known verb, add it to the conformance list deliberately", path(cmd), alias)
 
 			checked++

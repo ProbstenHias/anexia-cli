@@ -89,7 +89,9 @@ func (g *globalOptions) Client(flags *pflag.FlagSet) (client.Client, error) {
 		return nil, err
 	}
 
-	return anx.NewClient(opts)
+	c, err := anx.NewClient(opts)
+
+	return c, explicitBaseURLError(flags, err)
 }
 
 // API builds the generic Anexia client.
@@ -99,7 +101,21 @@ func (g *globalOptions) API(flags *pflag.FlagSet) (api.API, error) {
 		return nil, err
 	}
 
-	return anx.NewAPI(opts)
+	a, err := anx.NewAPI(opts)
+
+	return a, explicitBaseURLError(flags, err)
+}
+
+// explicitBaseURLError classifies a malformed value passed directly as a flag
+// as usage. The same error from a stored config remains a config failure.
+func explicitBaseURLError(flags *pflag.FlagSet, err error) error {
+	if err != nil && flags.Changed("api-base-url") && errors.Is(err, client.ErrInvalidBaseURL) {
+		value, _ := flags.GetString("api-base-url")
+
+		return errmap.Usagef("invalid --api-base-url %q: %v", value, err)
+	}
+
+	return err
 }
 
 // Context derives a context honoring the --timeout flag.

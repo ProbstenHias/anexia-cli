@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -486,6 +487,7 @@ func TestConfigSetUnknownKey(t *testing.T) {
 	_, _, err := run(t, "config", "set", "nope", "x")
 	require.ErrorContains(t, err, `unknown config key "nope"`)
 	require.ErrorContains(t, err, "token, api_base_url")
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
 }
 
 func TestConfigGetUnknownKey(t *testing.T) {
@@ -493,6 +495,30 @@ func TestConfigGetUnknownKey(t *testing.T) {
 
 	_, _, err := run(t, "config", "get", "nope")
 	require.ErrorContains(t, err, `unknown config key "nope"`)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+}
+
+// TestExplicitInvalidAPIBaseURLIsAUsageMistake covers malformed values passed
+// directly as flags on both client paths. A bad stored value remains a config
+// error, but an invalid explicit flag is an invocation mistake.
+func TestExplicitInvalidAPIBaseURLIsAUsageMistake(t *testing.T) {
+	tests := [][]string{
+		{"core", "location", "list"},
+		{"core", "service", "list"},
+	}
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			isolate(t)
+
+			_, _, err := run(t, append(slices.Clone(args),
+				"--token", "tok", "--api-base-url", "not-a-url")...)
+
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.ErrorContains(t, err, "api-base-url")
+		})
+	}
 }
 
 func TestConfigViewTableMasksToken(t *testing.T) {

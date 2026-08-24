@@ -131,7 +131,7 @@ func mappingValue(node *goyaml.Node, key string, seen map[*goyaml.Node]bool) (*g
 	// Explicit values override anything inherited through <<.
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
-			return node.Content[i+1], true
+			return resolveAlias(node.Content[i+1]), true
 		}
 	}
 
@@ -155,6 +155,14 @@ func mappingValue(node *goyaml.Node, key string, seen map[*goyaml.Node]bool) (*g
 	}
 
 	return nil, false
+}
+
+func resolveAlias(node *goyaml.Node) *goyaml.Node {
+	for node != nil && node.Alias != nil {
+		node = node.Alias
+	}
+
+	return node
 }
 
 // validateKeys rejects keys koanf would otherwise silently ignore.

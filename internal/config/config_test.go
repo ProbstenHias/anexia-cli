@@ -190,6 +190,19 @@ func TestLoadAllowsAConcreteValueToOverrideMergedNull(t *testing.T) {
 	require.Equal(t, "good", got.Token)
 }
 
+// TestLoadRejectsANullAlias covers an explicit key whose YAML node is an alias
+// to null. Inspecting the alias node itself misses the effective null value and
+// silently clears the token.
+func TestLoadRejectsANullAlias(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := "<<:\n  - {api_base_url: https://engine.example}\n  - {api_base_url: &null_value null}\ntoken: *null_value\n"
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	_, err := config.Load(path)
+
+	require.ErrorContains(t, err, `config key "token" is null`)
+}
+
 func TestLoadRejectsMalformedYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("token: [unclosed\n"), 0o600))
