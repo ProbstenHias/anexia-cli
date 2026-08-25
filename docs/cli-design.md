@@ -27,8 +27,8 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `anexia core locations list` works too, but the canonical name in help output is singular. Use
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
-Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core` and
-`network`, and later `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
+Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
+`network` and `dns`, and later `vsphere`, `kubernetes`, `lbaas`, `e5e`, `frontier`, `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 
@@ -53,11 +53,19 @@ A resource only gets the verbs the Engine actually supports. `core location` is 
 Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `create` that
 always fails with "operation not supported" is worse than no `create` at all.
 
-The same rule applies to the registry itself. `internal/resource` currently implements `list` and
-`get`. The write verbs are specified here and land with the first resource that needs them, rather
-than sitting unused. Some resources the CLI already reaches are writable in the Engine, `network
-prefix` and `network address` among them, but they wait for the registry rather than growing a
-hand-written `create` that the registry half could not match.
+The same rule applies to the registry itself. `internal/resource` implements all five verbs. A
+resource declares the ones it has: `List` and `Get` are flags, `Delete` is a flag because it
+carries no payload, and `create` and `update` are enabled by supplying the hook that registers
+their flags. Create and update take separate hooks because their requirements are opposite, a
+create refuses a missing field where an update leaves it alone.
+
+A resource that is only reachable inside another, such as a DNS record inside its zone, declares a
+`Scope` hook. Scope flags are required, and unlike list filters they apply to every verb, because
+without one there is no collection to address at all.
+
+Some resources the CLI already reaches are writable in the Engine and do not offer the verbs yet,
+`network prefix` and `network address` among them. They were waiting for the registry rather than
+growing a hand-written `create` it could not match; now they are waiting only to be declared.
 
 Two extra verbs exist for relations, meaning a collection a resource owns that has no identity of
 its own. A resource's tags are the example:
@@ -72,9 +80,13 @@ anexia core resource tag remove <resource-id> staging
 you are attaching an existing one. The distinction matters: `anexia core tag create` really does
 create a tag object, and `anexia core resource tag add` does not.
 
-Four planned operations have no honest CRUD spelling and are allowed as leaf
+Four operations have no honest CRUD spelling and are allowed as leaf
 verbs: `network address reserve`, `dns zone import`, `dns zone apply`, and
-`storage bucket empty-and-delete`. The last name is deliberately explicit: go-anxcloud's
+`storage bucket empty-and-delete`. The two DNS ones ship; the others are planned.
+`import` and `apply` take a document via `--file` rather than payload flags,
+because the Engine accepts a BIND zone file and a JSON changeset respectively,
+and spelling either out as repeated flags would mean inventing a small language
+to parse, document and escape. The last name is deliberately explicit: go-anxcloud's
 `EmptyAndDelete` permanently deletes the bucket after emptying it, so `empty`
 would promise safer behavior than the API provides. Adding any other action verb
 requires updating the design and the conformance vocabulary together.
@@ -151,9 +163,21 @@ Sort controls are not filters and are named for what they do: `--order` takes th
 by, `--descending` reverses it. Only `core tag list` has them, because it is the only endpoint
 that accepts sorting.
 
-When write verbs arrive, the ones on resources that report a provisioning state will get `--wait`
-and `--wait-timeout`. Resources without a state must not get the flags at all, so `--wait` is
-never accepted only to fail later.
+Write verbs on resources that report a provisioning state will get `--wait` and `--wait-timeout`.
+Resources without a state must not get the flags at all, so `--wait` is never accepted only to
+fail later. No resource implemented so far reports one.
+
+An `update` that names no field is refused before the write. The Engine would accept it, and on a
+resource that versions its contents that means a revision nobody asked for, reported as success.
+
+An `update` reads the object first, so a field the user did not name goes back exactly as the
+Engine returned it. That is a promise about what has to be typed, not about a sparse request body:
+the client serializes the whole object either way.
+
+A field the Engine cannot change safely does not get a flag. `dns zone update` has no `--name`,
+because the Engine's zone update carries the name only in the request body with no old name
+anywhere in the request, so what a changed name does is undefined. Renaming is not offered rather
+than guessed at.
 
 ## Positional arguments
 
@@ -322,8 +346,8 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 `listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag`, `core service`, `network prefix` and `network address`
-are the current examples). They
+hand against the legacy client (`core tag`, `core service`, `network prefix`, `network address` and
+the two `dns zone` document verbs are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
 the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
 `RenderList` for output. Reach for those before writing a variant. When the generic client gains
@@ -357,6 +381,15 @@ but it assembles a path from the object's own fields and joins the segments, whi
 relative one. So a value the CLI hands either client as part of a path has to be escaped for its own
 segment and refused if it names nothing, which is why that check sits in the shared code rather than
 in the hand-written commands.
+
+Within the generic half the answer still differs by field, the same way it differs by client. An
+identifier the client appends itself is escaped by the client, so escaping it first double-encodes
+it. A field the object interpolates into its own path is not: `clouddnsv1.Record` builds its
+endpoint by formatting the zone name into a string it then parses, so an unescaped question mark
+there ends the path and the rest becomes query parameters, addressing a different zone's records
+than the user named. That one the CLI escapes. The rule is the same as for the legacy clients, read
+the object before adding or removing an escape, and pin the answer with a test that fails when the
+escape is dropped.
 
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents

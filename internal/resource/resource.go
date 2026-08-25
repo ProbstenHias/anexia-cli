@@ -32,6 +32,9 @@ type Env interface {
 	Context(parent context.Context) (context.Context, context.CancelFunc)
 	// Fail annotates an error before it reaches the user.
 	Fail(err error) error
+	// AssumeYes reports whether --yes was passed, so the destructive verbs
+	// honor it in one place rather than reading the flag themselves.
+	AssumeYes() bool
 }
 
 // Pointer constrains PO to be the pointer type of O that implements the
@@ -52,8 +55,7 @@ type Column[O any] struct {
 }
 
 // Spec declares a resource: its command name, how it renders, and which verbs
-// it supports. Only the read verbs exist so far; see docs/cli-design.md for
-// why, and for what the write verbs will look like.
+// it supports. See docs/cli-design.md for the rules every verb follows.
 type Spec[O any, PO Pointer[O]] struct {
 	// Noun is the command name, singular and lowercase.
 	Noun string
@@ -70,6 +72,9 @@ type Spec[O any, PO Pointer[O]] struct {
 	List bool
 	// Get enables "<noun> get <id>", and requires Identify.
 	Get bool
+	// Delete enables "<noun> delete <id>", and requires Identify. It has no
+	// payload, which is why it is a flag where create and update are hooks.
+	Delete bool
 
 	// Identify writes a positional identifier into an empty object so the
 	// single-object verbs can address it.
@@ -78,6 +83,27 @@ type Spec[O any, PO Pointer[O]] struct {
 	// Filters registers list-only flags and returns a hook applying them to
 	// the filter object.
 	Filters func(*pflag.FlagSet) func(*O)
+
+	// Scope registers the flags a resource needs to be addressed at all,
+	// such as the zone a DNS record lives in, and returns a hook applying
+	// them. Unlike Filters these are required and they run on every verb.
+	Scope func(*pflag.FlagSet) func(*O) error
+
+	// CreatePayload registers the flags carrying a create's payload and
+	// returns a hook applying them, reporting a usage error for a missing
+	// required field. Non-nil enables "<noun> create".
+	CreatePayload func(*pflag.FlagSet) func(*O) error
+
+	// UpdatePayload registers the flags carrying an update's changes and
+	// returns a hook applying only the ones the user set, reporting a usage
+	// error when nothing changed. Non-nil enables "<noun> update <id>",
+	// which requires Identify and a Get the Engine supports.
+	//
+	// Create and update take separate hooks because their requirements are
+	// opposite: create refuses a missing field, update leaves it alone. A
+	// single hook would have to be told which verb it was serving, which is
+	// these two functions with a worse signature.
+	UpdatePayload func(*pflag.FlagSet) func(*O) error
 }
 
 // identify returns a fresh object addressed by id, or a usage error when the
@@ -91,6 +117,27 @@ func (s Spec[O, PO]) identify(id string) (PO, error) {
 	s.Identify(&obj, id)
 
 	return PO(&obj), nil
+}
+
+// scoped returns a fresh object addressed by id and carrying whatever the
+// resource needs to be reachable, such as the zone a DNS record lives in.
+//
+// Scope runs after Identify so a scope hook cannot be defeated by an
+// identifier, and before any request so a missing one is a usage error rather
+// than a request to the wrong place.
+func (s Spec[O, PO]) scoped(id string, applyScope func(*O) error) (PO, error) {
+	obj, err := s.identify(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if applyScope != nil {
+		if err := applyScope((*O)(obj)); err != nil {
+			return nil, err
+		}
+	}
+
+	return obj, nil
 }
 
 // plural names the resource in prose, defaulting to the noun with an s.
@@ -114,6 +161,18 @@ func Command[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
 
 	if spec.Get {
 		cmd.AddCommand(newGetCommand(env, spec))
+	}
+
+	if spec.CreatePayload != nil {
+		cmd.AddCommand(newCreateCommand(env, spec))
+	}
+
+	if spec.UpdatePayload != nil {
+		cmd.AddCommand(newUpdateCommand(env, spec))
+	}
+
+	if spec.Delete {
+		cmd.AddCommand(newDeleteCommand(env, spec))
 	}
 
 	return cmd

@@ -84,6 +84,36 @@ unless you pass `--yes`; `tag remove` does not, because reattaching a tag costs 
 exit with a distinct code per error class: 2 for usage mistakes, 3 for authentication, 4 for not
 found, 5 for timeouts, 6 for rate limits, 7 for a declined confirmation.
 
+### DNS
+
+Payload fields are flags, on `create` and `update` alike, so an update names only what is
+changing and everything else keeps the value the Engine already had.
+
+```sh
+anexia dns zone create --name example.com --admin-email admin@example.com
+anexia dns zone update example.com --ttl 7200
+anexia dns record create --zone example.com --name www --type A --rdata 10.0.0.1
+anexia dns record list --zone example.com --type A
+```
+
+A record lives inside a zone, so every `dns record` verb takes `--zone`. There is no
+`dns record get`: the Engine has no endpoint for a single record, and `dns record update` works
+around that by reading the zone's records and writing back the one you named.
+
+Renaming a zone is not offered. The Engine's zone update carries the name in the request body
+with no old name anywhere, so what a changed name would do is not something the client defines.
+
+Two zone operations take a document rather than flags, because that is what the Engine accepts:
+
+```sh
+anexia dns zone import example.com --file zone.db
+anexia dns zone apply example.com --file changeset.json
+```
+
+`import` replaces the zone's contents with a BIND zone file. `apply` sends a JSON changeset of
+records to create and records to delete. Both confirm first, and both read stdin with `--file -`,
+which needs `--yes` since the prompt would otherwise read the document.
+
 ### Global flags
 
 | Flag | Default | Description |
@@ -160,12 +190,11 @@ cannot reach it: either the library says the Engine has no such operation, or it
 implemented one. The distinction matters to whoever picks the work up, so the tables say which
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
-The `core` and `network` groups below are implemented. `network` reads only for now: the resource
-registry the CLI builds commands from has no write verbs yet, and giving them to the prefix and
-address commands alone, which are hand-written against the older client, would leave the two
-halves of the CLI offering different verbs for the same noun. Everything after those two groups is
-a roadmap of what the library can reach, read off go-anxcloud v0.14.5 and not verified against the
-Engine.
+The `core`, `network` and `dns` groups below are implemented. `network` reads only for now: its
+prefix and address commands are hand-written against the older client, and the registry only just
+grew the write verbs, so giving them to one half of the CLI would leave the two halves offering
+different verbs for the same noun. Everything after those three groups is a roadmap of what the
+library can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
 
 ### core
 
@@ -201,8 +230,8 @@ Engine.
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `dns zone` | [ ] | [ ] | [ ] | [ ] | [ ] | `import`/`apply` [ ] |
-| `dns record` | [ ] | - | [ ] | [ ] | [ ] | |
+| `dns zone` | [x] | [x] | [x] | [x] | [x] | `import`/`apply` [x]; no rename, the Engine's update carries no old name |
+| `dns record` | [x] | - | [x] | [x] | [x] | scoped by `--zone`; get unimplemented in the library |
 
 ### kubernetes
 
@@ -263,7 +292,8 @@ handle updates differently from the other four, so their write verbs may not all
 | Feature | Status |
 | --- | :-: |
 | Declarative resource registry, read verbs | [x] |
-| Registry support for `create`, `update`, `delete` | [ ] |
+| Registry support for `create`, `update`, `delete` | [x] |
+| Registry support for scoped resources, such as a record inside its zone | [x] |
 | `table`, `json`, `yaml`, `tsv` output | [x] |
 | `--no-headers` | [x] |
 | Paging with `--page`, `--limit`, `--all` | [x] |
@@ -276,11 +306,11 @@ handle updates differently from the other four, so their write verbs may not all
 | Tag filters on every taggable resource | [ ] |
 | `--field` column selection | [ ] |
 
-The write verbs are specified in [docs/cli-design.md](docs/cli-design.md) but the resource
-registry the CLI builds commands from does not implement them yet. Most resources reachable today
-are read-only in the Engine anyway. `core tag` is the exception and drives the legacy client
-directly; prefixes and addresses are writable in the library but wait for the registry, so that
-the two halves of the CLI keep offering the same verbs.
+The write verbs landed with the `dns` group, the first resources the Engine lets the CLI write
+through the registry. Most other resources reachable today are read-only in the Engine anyway.
+`core tag` is the exception and drives the legacy client directly; prefixes and addresses are
+writable in the library and still wait to be declared on the registry, so that the two halves of
+the CLI keep offering the same verbs.
 
 ## Development
 
