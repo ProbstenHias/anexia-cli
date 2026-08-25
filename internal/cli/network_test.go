@@ -3,6 +3,7 @@ package cli_test
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -59,6 +60,24 @@ func TestNetworkNounsOnlyHaveReadVerbs(t *testing.T) {
 				"write verbs wait for the resource registry to grow them")
 		}
 	}
+}
+
+// The VLAN endpoint does not return the same location shape the location
+// endpoint does: go-anxcloud's own fixtures for it carry the site code in
+// "name" and no "code" at all. Reading only "code" leaves the column blank for
+// every VLAN, which is the one thing this column exists to say.
+func TestNetworkVlanListRendersTheLocationTheVlanEndpointReturns(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK,
+		`{"data":{"page":1,"total_pages":1,"total_items":1,"limit":50,"data":[
+		  {"identifier":"v-1","name":"VLAN2000","status":"Active",
+		   "locations":[{"identifier":"l-1","name":"ANX04"}]}
+		]}}`)
+
+	stdout, _, err := run(t, "network", "vlan", "list", "-o", "tsv", "--no-headers",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, "v-1\tVLAN2000\tActive\tANX04\n", stdout)
 }
 
 func TestNetworkVlanListTable(t *testing.T) {
@@ -458,6 +477,53 @@ func TestNetworkAddressListPaging(t *testing.T) {
 		"--page", "3", "--limit", "7", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
 	requirePaging(t, last.query, "3", "7")
+}
+
+// Both hand-written nouns have to call ValidatePaging before they build a
+// request. Dropping that call is invisible in the happy path: the value simply
+// travels to the Engine and comes back as whatever the Engine makes of it, so
+// each case asserts the server was never reached.
+func TestNetworkListRejectsOutOfRangePaging(t *testing.T) {
+	nouns := []struct {
+		noun string
+		body string
+	}{
+		{noun: "prefix", body: twoPrefixes},
+		{noun: "address", body: twoAddresses},
+	}
+
+	pagings := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "page below one", args: []string{"--page", "0"}, want: "--page"},
+		{name: "limit below one", args: []string{"--limit", "0"}, want: "--limit"},
+		{name: "limit above the maximum", args: []string{"--limit", "1001"}, want: "--limit"},
+		{
+			name: "a page too large to walk from",
+			args: []string{"--all", "--page", strconv.Itoa(math.MaxInt)},
+			want: "--page",
+		},
+	}
+
+	for _, n := range nouns {
+		for _, p := range pagings {
+			t.Run(n.noun+" "+p.name, func(t *testing.T) {
+				isolate(t)
+				srv, last := server(t, http.StatusOK, n.body)
+
+				args := append([]string{"network", n.noun, "list"}, p.args...)
+				args = append(args, "--token", "tok", "--api-base-url", srv.URL)
+
+				_, _, err := run(t, args...)
+				require.Error(t, err)
+				require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+				require.ErrorContains(t, err, p.want)
+				require.Empty(t, last.path, "the request must not reach the Engine at all")
+			})
+		}
+	}
 }
 
 // requirePaging pins the paging parameters as parsed values. Substring

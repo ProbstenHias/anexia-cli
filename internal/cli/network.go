@@ -62,10 +62,20 @@ func newNetworkVlanCommand(opts *globalOptions) *cobra.Command {
 // array and go-anxcloud says there is no way to configure more than one, so
 // anything past the first is not something a column can show honestly; the
 // full array is one "-o json" away.
+//
+// The two endpoints disagree on where the site code lives. core/location fills
+// "code" and gives "name" the long form, while the VLAN endpoint sends the code
+// as "name" and no "code" at all. Both decode into the same struct, so the
+// column takes whichever field arrived rather than picking one and rendering
+// blank against the other.
 func vlanLocation(v *vlanv1.VLAN) string {
 	if len(v.Locations) == 0 {
 		return ""
 	}
 
-	return v.Locations[0].Code
+	if code := v.Locations[0].Code; code != "" {
+		return code
+	}
+
+	return v.Locations[0].Name
 }
