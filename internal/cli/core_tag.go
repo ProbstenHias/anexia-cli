@@ -15,10 +15,11 @@ import (
 
 // queryValue escapes a value destined for a legacy client's query string.
 //
-// The legacy clients build their URLs with fmt.Sprintf and no escaping, so a
+// The core/tags client builds its URLs with fmt.Sprintf and no escaping, so a
 // filter containing a space fails the request and one containing an ampersand
-// injects further parameters. The generic client escapes for itself, which is
-// why only the hand-written commands need this.
+// injects further parameters. Not every legacy client needs this: the ipam ones
+// behind the network commands escape their own filters, and escaping those here
+// too would double it. The generic client escapes for itself throughout.
 func queryValue(v string) string {
 	return url.QueryEscape(v)
 }

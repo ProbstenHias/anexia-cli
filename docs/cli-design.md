@@ -27,8 +27,8 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `anexia core locations list` works too, but the canonical name in help output is singular. Use
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
-Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
-and later `network`, `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
+Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core` and
+`network`, and later `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 
@@ -54,8 +54,10 @@ Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `
 always fails with "operation not supported" is worse than no `create` at all.
 
 The same rule applies to the registry itself. `internal/resource` currently implements `list` and
-`get`, because every resource the CLI reaches today is read-only. The write verbs are specified
-here and land with the first resource that needs them, rather than sitting unused.
+`get`. The write verbs are specified here and land with the first resource that needs them, rather
+than sitting unused. Some resources the CLI already reaches are writable in the Engine, `network
+prefix` and `network address` among them, but they wait for the registry rather than growing a
+hand-written `create` that the registry half could not match.
 
 Two extra verbs exist for relations, meaning a collection a resource owns that has no identity of
 its own. A resource's tags are the example:
@@ -137,6 +139,13 @@ Filter flags on `list` are named after the field they filter, in the singular: `
 `--location`, `--status`, `--service`. Not after the Engine's query parameter, which is why
 `core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
 be plural, but the Engine does not currently accept any.
+
+Free-text search is the one thing that flag naming rule cannot cover, because there is no field to
+name it after: the Engine matches the term against whichever fields it likes. That flag is
+`--search`, and it is only on the commands whose endpoint offers it, `network prefix list` and
+`network address list`. Where a resource offers both, as `network address list` does, search and
+the field filters live on separate endpoints that do not accept each other's parameters, so asking
+for both at once is a usage mistake rather than a request the CLI narrows on its own.
 
 Sort controls are not filters and are named for what they do: `--order` takes the field to sort
 by, `--descending` reverses it. Only `core tag list` has them, because it is the only endpoint
@@ -313,7 +322,8 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 `listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag` and `core service` are the current examples). They
+hand against the legacy client (`core tag`, `core service`, `network prefix` and `network address`
+are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
 the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
 `RenderList` for output. Reach for those before writing a variant. When the generic client gains
@@ -325,11 +335,18 @@ plural alias, an exit code that depended on the client, a `--all` flag present o
 one half and returned a 400 on the other. Sharing a helper is how that stops happening.
 
 That last one needs the hand-written half to do something the registry does not. The legacy clients
-build their URLs by interpolating values into a format string, so the CLI escapes every value it
-hands them, filters and identifiers alike. Skipping it does not just break a value with a space: an
-ampersand in a filter becomes extra query parameters, and a question mark in an identifier ends the
-path, so the request addresses a different object and overrides the flags the user passed. On a
-delete that means removing the wrong tag and reporting success.
+build their URLs by interpolating values into a format string, so a value that reaches one of them
+unescaped can leave the place it was meant to go. An ampersand in a filter becomes extra query
+parameters, and a question mark in an identifier ends the path, so the request addresses a
+different object and overrides the flags the user passed. On a delete that means removing the
+wrong tag and reporting success.
+
+Which values the CLI has to escape is per client, not per half, because some legacy clients escape
+for themselves. The `core/tags` client interpolates its filters raw, so `core tag list` escapes
+them. The `ipam` clients behind `network prefix` and `network address` query-escape their own
+filters, so escaping those in the CLI too would double it and search for a literal `%26`. No legacy
+client escapes an identifier, so those go through the path escaper everywhere. Read the client
+before adding or removing an escape, and pin the answer with a test that a doubled escape fails.
 
 Query and path escaping are not interchangeable. A query escaper writes a space as a plus, which a
 path reader takes literally, so identifiers go through the path escaper and filters through the
