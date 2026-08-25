@@ -3,6 +3,7 @@ package cli_test
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -113,6 +114,17 @@ var engineActions = map[string]string{
 	"anexia network prefix get":       `reading prefix "placeholder"`,
 	"anexia network address list":     "listing addresses",
 	"anexia network address get":      `reading address "placeholder"`,
+	"anexia dns zone list":            "listing zones",
+	"anexia dns zone get":             `reading zone "placeholder"`,
+	"anexia dns zone create":          `creating zone "placeholder"`,
+	"anexia dns zone update":          `reading zone "placeholder"`,
+	"anexia dns zone delete":          `deleting zone "placeholder"`,
+	"anexia dns zone import":          `importing zone "placeholder"`,
+	"anexia dns zone apply":           `applying changeset to zone "placeholder"`,
+	"anexia dns record list":          "listing records",
+	"anexia dns record create":        `creating record "placeholder"`,
+	"anexia dns record update":        `reading record "placeholder"`,
+	"anexia dns record delete":        `deleting record "placeholder"`,
 }
 
 // engineCommand reports whether cmd is a leaf that talks to the Engine.
@@ -226,7 +238,9 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	t.Parallel()
 
 	allowed := map[string]map[string]bool{
-		"anexia core tag delete": {"destroy": true},
+		"anexia core tag delete":   {"destroy": true},
+		"anexia dns zone delete":   {"destroy": true},
+		"anexia dns record delete": {"destroy": true},
 	}
 	checked := 0
 
@@ -375,11 +389,42 @@ func TestConformanceRelationListsOmitPagingFlags(t *testing.T) {
 	assert.Positive(t, checked, "the tree should have relation lists to check")
 }
 
+// invocationFlags are the flags a command must be given to get past its own
+// validation and reach the Engine. Only the ones a command actually defines
+// are passed, so no command sees an unknown flag.
+//
+// A command that requires a flag missing from this map stops at "invalid
+// usage:", which the error-shape test rejects outright rather than letting the
+// check pass having proved nothing.
+var invocationFlags = map[string]string{
+	"name":        "placeholder",
+	"service":     "placeholder",
+	"zone":        "placeholder",
+	"type":        "A",
+	"rdata":       "10.0.0.1",
+	"admin-email": "admin@example.com",
+}
+
+// documentFile writes a file for the commands that read one, so --file names
+// something that exists and the command gets as far as the Engine. The content
+// is a changeset, which "dns zone apply" parses and "dns zone import" sends on
+// as opaque zone data.
+func documentFile(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "document")
+	require.NoError(t, os.WriteFile(path, []byte(`{"create":[],"delete":[]}`), 0o600))
+
+	return path
+}
+
 // invocation builds a command line that satisfies cmd's own argument and flag
 // requirements, so the command reaches the Engine instead of failing to parse.
 // Requirements are read off the command rather than guessed, which keeps this
 // working as the tree grows.
-func invocation(cmd *cobra.Command) []string {
+func invocation(t *testing.T, cmd *cobra.Command) []string {
+	t.Helper()
+
 	args := strings.Fields(strings.TrimPrefix(cmd.CommandPath(), "anexia "))
 
 	// A command without a validator accepts any count, including zero, so
@@ -407,12 +452,16 @@ func invocation(cmd *cobra.Command) []string {
 		}
 	}
 
-	// Flags a command requires to get past its own validation. Only those
-	// it actually defines are passed, so no command sees an unknown flag.
-	for _, name := range []string{"name", "service"} {
+	for name, value := range invocationFlags {
 		if cmd.Flags().Lookup(name) != nil {
-			args = append(args, "--"+name, "placeholder")
+			args = append(args, "--"+name, value)
 		}
+	}
+
+	// A document-shaped operation needs a file that exists, and refuses to
+	// read one from stdin without --yes, so both are supplied together.
+	if cmd.Flags().Lookup("file") != nil {
+		args = append(args, "--file", documentFile(t))
 	}
 
 	return args
@@ -440,7 +489,7 @@ func TestConformanceErrorMessagesReadAsActionThenCause(t *testing.T) {
 
 		full := cmd.CommandPath()
 
-		_, _, err := runWithInput(t, "y\n", invocation(cmd)...)
+		_, _, err := runWithInput(t, "y\n", invocation(t, cmd)...)
 		require.Error(t, err, "%s: expected the Engine failure to surface", full)
 
 		message := errmap.Message(err)
@@ -680,7 +729,7 @@ func TestConformanceEveryEngineCommandSupportsEveryOutputFormat(t *testing.T) {
 		full := cmd.CommandPath()
 
 		for _, format := range []string{"table", "json", "yaml", "tsv", "xml"} {
-			args := append(invocation(cmd), "-o", string(format))
+			args := append(invocation(t, cmd), "-o", string(format))
 
 			_, _, err := runWithInput(t, "y\n", args...)
 			require.Error(t, err, "%s: expected a failure without a token", full)
