@@ -322,7 +322,8 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 `listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag` and `core service` are the current examples). They
+hand against the legacy client (`core tag`, `core service`, `network prefix` and `network address`
+are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
 the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
 `RenderList` for output. Reach for those before writing a variant. When the generic client gains
@@ -334,18 +335,18 @@ plural alias, an exit code that depended on the client, a `--all` flag present o
 one half and returned a 400 on the other. Sharing a helper is how that stops happening.
 
 That last one needs the hand-written half to do something the registry does not. The legacy clients
-build their URLs by interpolating values into a format string, so the CLI escapes the values it
-hands them, filters and identifiers alike. Skipping it does not just break a value with a space: an
-ampersand in a filter becomes extra query parameters, and a question mark in an identifier ends the
-path, so the request addresses a different object and overrides the flags the user passed. On a
-delete that means removing the wrong tag and reporting success.
+build their URLs by interpolating values into a format string, so a value that reaches one of them
+unescaped can leave the place it was meant to go. An ampersand in a filter becomes extra query
+parameters, and a question mark in an identifier ends the path, so the request addresses a
+different object and overrides the flags the user passed. On a delete that means removing the
+wrong tag and reporting success.
 
-Which values need it is per client, not per half. The `core/tags` client interpolates its filters
-raw, so `core tag list` escapes them. The `ipam` clients behind `network prefix` and `network
-address` escape their own query values, so escaping there too would double it and search for a
-literal `%26`. Identifiers still go through the path escaper in both cases. Check what the client
-does before adding or removing an escape, and pin the answer with a test that a doubled escape
-would fail.
+Which values the CLI has to escape is per client, not per half, because some legacy clients escape
+for themselves. The `core/tags` client interpolates its filters raw, so `core tag list` escapes
+them. The `ipam` clients behind `network prefix` and `network address` query-escape their own
+filters, so escaping those in the CLI too would double it and search for a literal `%26`. No legacy
+client escapes an identifier, so those go through the path escaper everywhere. Read the client
+before adding or removing an escape, and pin the answer with a test that a doubled escape fails.
 
 Query and path escaping are not interchangeable. A query escaper writes a space as a plus, which a
 path reader takes literally, so identifiers go through the path escaper and filters through the
