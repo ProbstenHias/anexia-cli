@@ -11,6 +11,7 @@ import (
 	"go.anx.io/go-anxcloud/pkg/api"
 	"go.anx.io/go-anxcloud/pkg/api/types"
 
+	"github.com/ProbstenHias/anexia-cli/internal/confirm"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 )
 
@@ -36,6 +37,8 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 		applyFilters = spec.Filters(flags)
 	}
 
+	applyScope := registerScope(spec, flags)
+
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		if err := ValidatePaging(page, limit, all); err != nil {
 			return err
@@ -46,6 +49,24 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 			return err
 		}
 
+		var filter O
+		if applyFilters != nil {
+			applyFilters(&filter)
+		}
+
+		// A scope is not a filter: without it the list endpoint cannot be
+		// addressed at all, so it applies here as well as on the verbs
+		// that take an identifier.
+		//
+		// Before the client is built, so a missing scope reports the usage
+		// mistake it is. Building first would report a missing token ahead
+		// of it, sending the user after the wrong problem.
+		if applyScope != nil {
+			if err := applyScope(&filter); err != nil {
+				return err
+			}
+		}
+
 		a, err := env.API(cmd.Flags())
 		if err != nil {
 			return err
@@ -53,11 +74,6 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 
 		ctx, cancel := env.Context(cmd.Context())
 		defer cancel()
-
-		var filter O
-		if applyFilters != nil {
-			applyFilters(&filter)
-		}
 
 		items, err := fetch(ctx, a, cmd.ErrOrStderr(), PO(&filter), spec.plural(), page, limit, all)
 		if err != nil {
@@ -213,40 +229,235 @@ func paginates(ctx context.Context, obj types.Object) (bool, error) {
 
 // newGetCommand builds "<noun> get <id>", the read of a single object.
 func newGetCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "get <id>",
 		Short: "Show one " + spec.Noun,
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ValidateIdentifier(spec.Noun, args[0]); err != nil {
-				return err
-			}
-
-			w, err := env.Writer(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-
-			obj, err := spec.identify(args[0])
-			if err != nil {
-				return err
-			}
-
-			a, err := env.API(cmd.Flags())
-			if err != nil {
-				return err
-			}
-
-			ctx, cancel := env.Context(cmd.Context())
-			defer cancel()
-
-			if err := a.Get(ctx, obj); err != nil {
-				return env.Fail(fmt.Errorf("reading %s %q: %w", spec.Noun, args[0], err))
-			}
-
-			return renderOne(w, spec, (*O)(obj))
-		},
 	}
+
+	applyScope := registerScope(spec, cmd.Flags())
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := ValidateIdentifier(spec.Noun, args[0]); err != nil {
+			return err
+		}
+
+		w, err := env.Writer(cmd.OutOrStdout())
+		if err != nil {
+			return err
+		}
+
+		obj, err := spec.scoped(args[0], applyScope)
+		if err != nil {
+			return err
+		}
+
+		a, err := env.API(cmd.Flags())
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := env.Context(cmd.Context())
+		defer cancel()
+
+		if err := a.Get(ctx, obj); err != nil {
+			return env.Fail(fmt.Errorf("reading %s %q: %w", spec.Noun, args[0], err))
+		}
+
+		return renderOne(w, spec, (*O)(obj))
+	}
+
+	return cmd
+}
+
+// registerScope declares the resource's scope flags on a verb and returns the
+// hook applying them, or nil when the resource needs no scope. Every verb calls
+// this, which is what stops a scope from being wired onto some of them.
+func registerScope[O any, PO Pointer[O]](spec Spec[O, PO], flags *pflag.FlagSet) func(*O) error {
+	if spec.Scope == nil {
+		return nil
+	}
+
+	return spec.Scope(flags)
+}
+
+// newCreateCommand builds "<noun> create", whose payload comes from flags
+// rather than positional arguments, so create and update share definitions.
+func newCreateCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a " + spec.Noun,
+		Args:  cobra.NoArgs,
+	}
+
+	flags := cmd.Flags()
+	applyScope := registerScope(spec, flags)
+	applyPayload := spec.CreatePayload(flags)
+
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		w, err := env.Writer(cmd.OutOrStdout())
+		if err != nil {
+			return err
+		}
+
+		var obj O
+
+		if applyScope != nil {
+			if err := applyScope(&obj); err != nil {
+				return err
+			}
+		}
+
+		if err := applyPayload(&obj); err != nil {
+			return err
+		}
+
+		a, err := env.API(cmd.Flags())
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := env.Context(cmd.Context())
+		defer cancel()
+
+		if err := a.Create(ctx, PO(&obj)); err != nil {
+			return env.Fail(fmt.Errorf("creating %s %q: %w", spec.Noun, describe(spec, &obj), err))
+		}
+
+		return renderOne(w, spec, &obj)
+	}
+
+	return cmd
+}
+
+// newUpdateCommand builds "<noun> update <id>": read the object, apply the
+// flags the user changed, write it back. Reading first is what lets the user
+// name only what they are changing.
+//
+// The request body is still the whole object, because the generic client
+// serializes everything it loaded. "Only the fields you changed" is a promise
+// about what has to be typed, not about a sparse body.
+func newUpdateCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Update a " + spec.Noun,
+		Args:  cobra.ExactArgs(1),
+	}
+
+	flags := cmd.Flags()
+	applyScope := registerScope(spec, flags)
+	applyPayload := spec.UpdatePayload(flags)
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := ValidateIdentifier(spec.Noun, args[0]); err != nil {
+			return err
+		}
+
+		w, err := env.Writer(cmd.OutOrStdout())
+		if err != nil {
+			return err
+		}
+
+		obj, err := spec.scoped(args[0], applyScope)
+		if err != nil {
+			return err
+		}
+
+		a, err := env.API(cmd.Flags())
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := env.Context(cmd.Context())
+		defer cancel()
+
+		if err := a.Get(ctx, obj); err != nil {
+			return env.Fail(fmt.Errorf("reading %s %q: %w", spec.Noun, args[0], err))
+		}
+
+		// After the read, so a request is only made once the change is
+		// known to be one. Applying it before would let an update with
+		// nothing changed cost a round trip to be rejected.
+		if err := applyPayload((*O)(obj)); err != nil {
+			return err
+		}
+
+		if err := a.Update(ctx, obj); err != nil {
+			return env.Fail(fmt.Errorf("updating %s %q: %w", spec.Noun, args[0], err))
+		}
+
+		return renderOne(w, spec, (*O)(obj))
+	}
+
+	return cmd
+}
+
+// newDeleteCommand builds "<noun> delete <id>", which confirms before acting.
+func newDeleteCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "delete <id>",
+		// destroy is the Engine's own word for this, accepted so users
+		// arriving with its vocabulary land on the right command.
+		Aliases: []string{"destroy"},
+		Short:   "Delete a " + spec.Noun,
+		Args:    cobra.ExactArgs(1),
+	}
+
+	applyScope := registerScope(spec, cmd.Flags())
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := ValidateIdentifier(spec.Noun, args[0]); err != nil {
+			return err
+		}
+
+		obj, err := spec.scoped(args[0], applyScope)
+		if err != nil {
+			return err
+		}
+
+		// After the scope check, so a delete missing a required scope says
+		// so instead of asking the user to confirm something it could not
+		// have carried out.
+		question := fmt.Sprintf("delete %s %q", spec.Noun, args[0])
+		if err := confirm.Prompt(cmd.InOrStdin(), cmd.ErrOrStderr(), question, env.AssumeYes()); err != nil {
+			return err
+		}
+
+		a, err := env.API(cmd.Flags())
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := env.Context(cmd.Context())
+		defer cancel()
+
+		if err := a.Destroy(ctx, obj); err != nil {
+			return env.Fail(fmt.Errorf("deleting %s %q: %w", spec.Noun, args[0], err))
+		}
+
+		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "deleted %s %s\n", spec.Noun, args[0])
+
+		return err
+	}
+
+	return cmd
+}
+
+// describe names the object a create failed on, so the message says which one
+// rather than just the noun.
+//
+// It takes the first column that has a value, not simply the first: a resource
+// leads with its identifier, and a create is the one verb where the Engine has
+// not assigned one yet, so the leading column is empty exactly here. The next
+// column is the name the user typed, which is what they would recognize.
+func describe[O any, PO Pointer[O]](spec Spec[O, PO], obj *O) string {
+	for _, c := range spec.Columns {
+		if value := c.Value(obj); value != "" {
+			return value
+		}
+	}
+
+	return ""
 }
 
 // RegisterPagingFlags declares --page, --limit and --all. Commands written

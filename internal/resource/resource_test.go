@@ -108,9 +108,10 @@ func unpagedSpec() resource.Spec[unpaged, *unpaged] {
 
 // env implements resource.Env against a test server.
 type env struct {
-	baseURL string
-	format  output.Format
-	noAPI   bool
+	baseURL   string
+	format    output.Format
+	noAPI     bool
+	assumeYes bool
 }
 
 func (e *env) Writer(out io.Writer) (*output.Writer, error) {
@@ -135,6 +136,10 @@ func (*env) Context(parent context.Context) (context.Context, context.CancelFunc
 
 func (*env) Fail(err error) error {
 	return err
+}
+
+func (e *env) AssumeYes() bool {
+	return e.assumeYes
 }
 
 // request records what the test server received.
