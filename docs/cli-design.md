@@ -27,8 +27,8 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `anexia core locations list` works too, but the canonical name in help output is singular. Use
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
-Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core` and
-`network`, and later `vsphere`, `kubernetes`, `lbaas`, `dns`, `e5e`, `frontier`, `storage`.
+Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
+`network` and `dns`, and later `vsphere`, `kubernetes`, `lbaas`, `e5e`, `frontier`, `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 
@@ -346,8 +346,8 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 `listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag`, `core service`, `network prefix` and `network address`
-are the current examples). They
+hand against the legacy client (`core tag`, `core service`, `network prefix`, `network address` and
+the two `dns zone` document verbs are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
 the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
 `RenderList` for output. Reach for those before writing a variant. When the generic client gains
@@ -381,6 +381,15 @@ but it assembles a path from the object's own fields and joins the segments, whi
 relative one. So a value the CLI hands either client as part of a path has to be escaped for its own
 segment and refused if it names nothing, which is why that check sits in the shared code rather than
 in the hand-written commands.
+
+Within the generic half the answer still differs by field, the same way it differs by client. An
+identifier the client appends itself is escaped by the client, so escaping it first double-encodes
+it. A field the object interpolates into its own path is not: `clouddnsv1.Record` builds its
+endpoint by formatting the zone name into a string it then parses, so an unescaped question mark
+there ends the path and the rest becomes query parameters, addressing a different zone's records
+than the user named. That one the CLI escapes. The rule is the same as for the legacy clients, read
+the object before adding or removing an escape, and pin the answer with a test that fails when the
+escape is dropped.
 
 Paging is the one place where the two halves cannot share an implementation. The legacy clients
 discard every byte of page metadata before returning, so `FetchPages` has only the page contents
