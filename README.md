@@ -76,8 +76,13 @@ anexia core resource list --tag production -o json
 anexia core resource tag add <resource-id> production staging
 anexia core tag delete <tag-id> --service <service-id> --yes
 anexia network vlan list --location <location-id> --status Active
+anexia network vlan create --location <location-id> --description "lab" --vm-provisioning
+anexia network vlan update <vlan-id> --description "lab (retired)" --vm-provisioning=false
 anexia network address list --prefix <prefix-id> --version 4
 ```
+
+Boolean payload flags such as `--vm-provisioning` are switched off on `update` with an explicit
+`--vm-provisioning=false`; leaving the flag out keeps whatever the Engine has.
 
 Every collection list takes `--page`, `--limit` and `--all`. Every `delete` asks for confirmation
 unless you pass `--yes`; `tag remove` does not, because reattaching a tag costs nothing. Failures
@@ -190,11 +195,11 @@ cannot reach it: either the library says the Engine has no such operation, or it
 implemented one. The distinction matters to whoever picks the work up, so the tables say which
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
-The `core`, `network` and `dns` groups below are implemented. `network` reads only for now: its
-prefix and address commands are hand-written against the older client, and the registry only just
-grew the write verbs, so giving them to one half of the CLI would leave the two halves offering
-different verbs for the same noun. Everything after those three groups is a roadmap of what the
-library can reach, read off go-anxcloud v0.14.5 and not verified against the Engine.
+The `core`, `network` and `dns` groups below are implemented. Within `network`, `vlan` has every
+verb because go-anxcloud models it generically; `prefix` and `address` read only for now, because
+they are hand-written against the older client and their write verbs are still to be declared.
+Everything after those three groups is a roadmap of what the library can reach, read off
+go-anxcloud v0.14.5 and not verified against the Engine.
 
 ### core
 
@@ -209,7 +214,7 @@ library can reach, read off go-anxcloud v0.14.5 and not verified against the Eng
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `network vlan` | [x] | [x] | [ ] | [ ] | [ ] | `--status` and `--location` filters [x] |
+| `network vlan` | [x] | [x] | [x] | [x] | [x] | `--status` and `--location` filters [x]; a VLAN's location is fixed at creation, so `update` has no `--location` |
 | `network prefix` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x] |
 | `network address` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x]; field filters [x]; `reserve` [ ] |
 
@@ -307,8 +312,8 @@ handle updates differently from the other four, so their write verbs may not all
 | `--field` column selection | [ ] |
 
 The write verbs landed with the `dns` group, the first resources the Engine lets the CLI write
-through the registry. Most other resources reachable today are read-only in the Engine anyway.
-`core tag` is the exception and drives the legacy client directly; prefixes and addresses are
+through the registry, and `network vlan` followed the same way. Most other resources reachable today
+are read-only in the Engine anyway. `core tag` drives the legacy client directly; prefixes and addresses are
 writable in the library and still wait to be declared on the registry, so that the two halves of
 the CLI keep offering the same verbs.
 

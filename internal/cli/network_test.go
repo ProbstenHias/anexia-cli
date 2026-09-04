@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,8 @@ const twoVlans = `{"data":{"page":1,"total_pages":1,"total_items":2,"limit":50,"
 ]}}`
 
 const noVlans = `{"data":{"page":1,"total_pages":1,"total_items":0,"limit":50,"data":[]}}`
+
+const oneVlan = `{"identifier":"v-1","name":"VLAN2000","description_customer":"office","role_text":"Customer","status":"Active","vm_provisioning":true,"locations":[{"identifier":"l-1","name":"ANX04"}]}`
 
 const twoPrefixes = `{"data":[
   {"identifier":"p-1","name":"10.0.0.0/24","description_customer":"office"},
@@ -47,10 +50,10 @@ func TestNetworkWithoutSubcommandPrintsHelp(t *testing.T) {
 	require.Contains(t, stdout, "address")
 }
 
-func TestNetworkNounsOnlyHaveReadVerbs(t *testing.T) {
+func TestNetworkLegacyNounsOnlyHaveReadVerbs(t *testing.T) {
 	isolate(t)
 
-	for _, noun := range []string{"vlan", "prefix", "address"} {
+	for _, noun := range []string{"prefix", "address"} {
 		stdout, _, err := run(t, "network", noun)
 		require.NoError(t, err)
 		require.Contains(t, stdout, "list")
@@ -59,6 +62,16 @@ func TestNetworkNounsOnlyHaveReadVerbs(t *testing.T) {
 			require.NotContains(t, stdout, absent,
 				"write verbs wait for the resource registry to grow them")
 		}
+	}
+}
+
+func TestNetworkVlanHasEveryVerb(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "vlan")
+	require.NoError(t, err)
+	for _, verb := range []string{"list", "get", "create", "update", "delete"} {
+		require.Contains(t, stdout, verb)
 	}
 }
 
@@ -142,6 +155,255 @@ func TestNetworkVlanGetTable(t *testing.T) {
 		"IDENTIFIER   NAME       STATUS   LOCATION\n"+
 			"v-1          VLAN2000   Active   ANX04\n",
 		stdout)
+}
+
+// The Engine takes one location on create and go-anxcloud's body hook flattens
+// it to a "location" string, so the CLI sends exactly what its fixtures show.
+func TestNetworkVlanCreateSendsASingleLocation(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, oneVlan)
+
+	stdout, _, err := run(t, "network", "vlan", "create",
+		"--location", "l-1", "--description", "office", "--vm-provisioning",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodPost, last.method)
+	require.Equal(t, "/api/vlan/v1/vlan.json", last.path)
+
+	// The whole body is pinned: no "locations" array, and nothing the Engine
+	// assigns itself (identifier, name, status) is sent along.
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
+	require.Equal(t, map[string]any{
+		"location":             "l-1",
+		"description_customer": "office",
+		"vm_provisioning":      true,
+	}, sent)
+
+	// The created VLAN is rendered from the Engine's response with the same
+	// columns as get, so a user sees the Engine-assigned name and status.
+	require.Equal(t,
+		"IDENTIFIER   NAME       STATUS   LOCATION\n"+
+			"v-1          VLAN2000   Active   ANX04\n",
+		stdout)
+}
+
+// -o json on create prints the Engine object as returned, not the column
+// projection, so scripts can read the identifier the Engine assigned.
+func TestNetworkVlanCreateJSON(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, oneVlan)
+
+	stdout, _, err := run(t, "network", "vlan", "create", "-o", "json",
+		"--location", "l-1", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+
+	// Leaving --vm-provisioning off means the VLAN is created without it, and
+	// the Engine has to be told so explicitly rather than by omission.
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
+	require.Equal(t, false, sent["vm_provisioning"])
+
+	var vlan map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &vlan))
+	require.Equal(t, "v-1", vlan["identifier"])
+	require.Equal(t, "VLAN2000", vlan["name"])
+	require.Equal(t, true, vlan["vm_provisioning"])
+}
+
+func TestNetworkVlanCreateRequiresALocation(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, oneVlan)
+
+	_, _, err := run(t, "network", "vlan", "create", "--description", "office",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "--location is required")
+	require.Empty(t, last.method, "a usage error must not reach the Engine")
+}
+
+// The location cannot be changed after creation, so update does not offer it.
+func TestNetworkVlanUpdateHasNoLocationFlag(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "vlan", "update", "--help")
+	require.NoError(t, err)
+	require.NotContains(t, stdout, "--location")
+	require.Contains(t, stdout, "--description")
+	require.Contains(t, stdout, "--vm-provisioning")
+}
+
+func TestNetworkVlanUpdateKeepsUnnamedFields(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	// The PUT response differs from the GET so the test can tell which one
+	// was rendered: the user has to see the state after the write. The
+	// description is not a table column, so the output is checked as JSON.
+	srv := recordingServer(t, &sent, oneVlan, strings.Replace(oneVlan, `"office"`, `"lab"`, 1))
+
+	stdout, _, err := run(t, "network", "vlan", "update", "v-1", "--description", "lab", "-o", "json",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 2)
+
+	var shown map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &shown))
+	require.Equal(t, "lab", shown["description_customer"], "the PUT response must be rendered, not the GET")
+	// The columns the write did not carry come back from the Engine and are
+	// still shown to the user.
+	require.Equal(t, "VLAN2000", shown["name"])
+	require.Equal(t, "Active", shown["status"])
+
+	require.Equal(t, http.MethodGet, sent[0].method)
+	require.Equal(t, "/api/vlan/v1/vlan.json/v-1", sent[0].path)
+	require.Equal(t, http.MethodPut, sent[1].method)
+	require.Equal(t, "/api/vlan/v1/vlan.json/v-1", sent[1].path)
+
+	// The Engine's VLAN update accepts exactly description_customer and
+	// vm_provisioning (go-anxcloud's legacy UpdateDefinition is the contract).
+	// Name, role and status are assigned by the Engine and the location is fixed
+	// at creation, so none of them may be echoed back and the whole PUT body is
+	// pinned rather than two fields.
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+	require.Equal(t, map[string]any{
+		"identifier":           "v-1",
+		"description_customer": "lab",
+		"vm_provisioning":      true,
+	}, body)
+}
+
+// A user who passes --description "" wants the description gone. go-anxcloud
+// drops an empty description from the request body, so the Engine would never
+// see the change and the command would report a success that changed nothing.
+// The CLI has to refuse as a usage error rather than lie, and nothing may be
+// written.
+func TestNetworkVlanUpdateRefusesAnEmptyDescription(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, oneVlan, oneVlan)
+
+	_, _, err := run(t, "network", "vlan", "update", "v-1", "--description", "",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "--description")
+
+	for _, r := range sent {
+		require.NotEqual(t, http.MethodPut, r.method, "a refused update must not be written")
+	}
+}
+
+// A failed PUT is reported as the update it was, not as the read before it.
+func TestNetworkVlanUpdateReportsAFailedWrite(t *testing.T) {
+	isolate(t)
+
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":500}}`))
+			return
+		}
+		_, _ = w.Write([]byte(oneVlan))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, _, err := run(t, "network", "vlan", "update", "v-1", "--description", "lab",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, []string{http.MethodGet, http.MethodPut}, methods, "the read must succeed and the write must be attempted")
+	require.Contains(t, errmap.Message(err), `updating vlan "v-1"`)
+}
+
+// A bool flag is only "set" when passed, so --vm-provisioning=false must count
+// as a change rather than being read as the default and rejected.
+func TestNetworkVlanUpdateCanDisableVMProvisioning(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, oneVlan, oneVlan)
+
+	_, _, err := run(t, "network", "vlan", "update", "v-1", "--vm-provisioning=false",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 2)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+	require.Equal(t, false, body["vm_provisioning"])
+}
+
+// The mirror image: a VLAN that has provisioning off gets it switched on, and
+// the description it already had rides along untouched. Together with the
+// disable test this pins that the flag's value is sent, not a constant.
+func TestNetworkVlanUpdateCanEnableVMProvisioning(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	off := strings.Replace(oneVlan, `"vm_provisioning":true`, `"vm_provisioning":false`, 1)
+	require.NotEqual(t, oneVlan, off, "fixture must start with provisioning off")
+	srv := recordingServer(t, &sent, off, oneVlan)
+
+	_, _, err := run(t, "network", "vlan", "update", "v-1", "--vm-provisioning",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 2)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+	require.Equal(t, map[string]any{
+		"identifier":           "v-1",
+		"description_customer": "office",
+		"vm_provisioning":      true,
+	}, body)
+}
+
+func TestNetworkVlanUpdateWithNothingChangedIsRejected(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, oneVlan)
+
+	_, _, err := run(t, "network", "vlan", "update", "v-1", "--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "nothing to update")
+
+	for _, r := range sent {
+		require.NotEqual(t, http.MethodPut, r.method, "nothing changed, so nothing may be written")
+	}
+}
+
+func TestNetworkVlanDeleteConfirms(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderr, err := runWithInput(t, "y\n", "network", "vlan", "delete", "v-1",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, last.method)
+	require.Equal(t, "/api/vlan/v1/vlan.json/v-1", last.path)
+	require.Contains(t, stderr, `delete vlan "v-1"`)
+	require.Contains(t, stderr, "deleted vlan v-1")
+}
+
+func TestNetworkVlanDeleteStopsOnARefusal(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
+
+	_, _, err := runWithInput(t, "n\n", "network", "vlan", "delete", "v-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Empty(t, sent, "a refused delete must not reach the Engine")
 }
 
 func TestNetworkVlansPluralAlias(t *testing.T) {
