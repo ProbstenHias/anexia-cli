@@ -110,6 +110,9 @@ var engineActions = map[string]string{
 	"anexia core service list":        "listing services",
 	"anexia network vlan list":        "listing vlans",
 	"anexia network vlan get":         `reading vlan "placeholder"`,
+	"anexia network vlan create":      `creating vlan "placeholder"`,
+	"anexia network vlan update":      `reading vlan "placeholder"`,
+	"anexia network vlan delete":      `deleting vlan "placeholder"`,
 	"anexia network prefix list":      "listing prefixes",
 	"anexia network prefix get":       `reading prefix "placeholder"`,
 	"anexia network address list":     "listing addresses",
@@ -238,9 +241,10 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	t.Parallel()
 
 	allowed := map[string]map[string]bool{
-		"anexia core tag delete":   {"destroy": true},
-		"anexia dns zone delete":   {"destroy": true},
-		"anexia dns record delete": {"destroy": true},
+		"anexia core tag delete":     {"destroy": true},
+		"anexia network vlan delete": {"destroy": true},
+		"anexia dns zone delete":     {"destroy": true},
+		"anexia dns record delete":   {"destroy": true},
 	}
 	checked := 0
 
@@ -403,6 +407,8 @@ var invocationFlags = map[string]string{
 	"type":        "A",
 	"rdata":       "10.0.0.1",
 	"admin-email": "admin@example.com",
+	"location":    "placeholder",
+	"description": "placeholder",
 }
 
 // documentFile writes a file for the commands that read one, so --file names

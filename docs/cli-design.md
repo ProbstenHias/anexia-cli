@@ -165,14 +165,20 @@ that accepts sorting.
 
 Write verbs on resources that report a provisioning state will get `--wait` and `--wait-timeout`.
 Resources without a state must not get the flags at all, so `--wait` is never accepted only to
-fail later. No resource implemented so far reports one.
+fail later. `network vlan` is the first implemented resource that reports one (`Pending`, `Active`,
+`Marked for deletion`); its `--wait` is still to come.
 
 An `update` that names no field is refused before the write. The Engine would accept it, and on a
 resource that versions its contents that means a revision nobody asked for, reported as success.
 
 An `update` reads the object first, so a field the user did not name goes back exactly as the
 Engine returned it. That is a promise about what has to be typed, not about a sparse request body:
-the client serializes the whole object either way.
+the client serializes the whole object either way. `network vlan update` is the one exception so
+far: the Engine's VLAN update can change only `description_customer` and `vm_provisioning`, so the
+hook clears what the read filled in, the Engine-assigned name, role and status and the location
+that is fixed at creation, and sends the identifier, `vm_provisioning` and, because go-anxcloud marks
+it `omitempty`, `description_customer` only when it is non-empty. That is also why `--description ""`
+is refused: the Engine would never see it.
 
 A field the Engine cannot change safely does not get a flag. `dns zone update` has no `--name`,
 because the Engine's zone update carries the name only in the request body with no old name
