@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.3.0...v0.4.0) (2026-09-04)
+
+
+### Features
+
+* **network:** add vlan create, update and delete ([#12](https://github.com/ProbstenHias/anexia-cli/issues/12)) ([0c37594](https://github.com/ProbstenHias/anexia-cli/commit/0c37594f4b279836f0fb795ba13d438f17fe7e2a))
+
 ## [0.3.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.2.0...v0.3.0) (2026-08-25)
 
 
