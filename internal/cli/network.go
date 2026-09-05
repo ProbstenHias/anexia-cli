@@ -22,8 +22,9 @@ func newNetworkCommand(opts *globalOptions) *cobra.Command {
 }
 
 // newNetworkVlanCommand builds "network vlan". VLANs are the one object in
-// this group go-anxcloud models generically, so this is a Spec with every verb
-// and the other two are read-only until their write verbs are declared.
+// this group go-anxcloud models generically, so this is a Spec with every verb.
+// prefix is hand-written against the legacy client with the same verbs, and
+// address is read-only until its write verbs are declared.
 func newNetworkVlanCommand(opts *globalOptions) *cobra.Command {
 	return resource.Command(opts, resource.Spec[vlanv1.VLAN, *vlanv1.VLAN]{
 		Noun:   "vlan",

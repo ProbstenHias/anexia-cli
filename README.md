@@ -215,7 +215,7 @@ go-anxcloud v0.14.5 and not verified against the Engine.
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `network vlan` | [x] | [x] | [x] | [x] | [x] | `--status` and `--location` filters [x]; a VLAN's location is fixed at creation, so `update` has no `--location` |
-| `network prefix` | [x] | [x] | [x] | [x] | [x] | `--search` [x]; the legacy client can only update the description, so `update` offers nothing else |
+| `network prefix` | [x] | [x] | [x] | [x] | [x] | `--search` [x]; a prefix's name is its Engine-assigned CIDR, so `update` offers `--description` only |
 | `network address` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x]; field filters [x]; `reserve` [ ] |
 
 ### vsphere
@@ -314,8 +314,7 @@ handle updates differently from the other four, so their write verbs may not all
 The write verbs landed with the `dns` group, the first resources the Engine lets the CLI write
 through the registry, and `network vlan` followed the same way. Most other resources reachable today
 are read-only in the Engine anyway. `core tag` and `network prefix` drive the legacy client directly;
-addresses are writable in the library and still wait to be declared, so that the two halves of
-the CLI keep offering the same verbs.
+addresses are writable in the library and their write verbs are still to be declared.
 
 ## Development
 

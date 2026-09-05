@@ -170,12 +170,12 @@ type prefixCreateFlags struct {
 func (f *prefixCreateFlags) register(flags *pflag.FlagSet) {
 	flags.StringVar(&f.location, "location", "", "location identifier to create the prefix in")
 	flags.IntVar(&f.version, "version", 0, "IP version of the prefix, 4 or 6")
-	flags.IntVar(&f.netmask, "netmask", 0, "netmask of the prefix, for example 24 or 64")
+	flags.IntVar(&f.netmask, "netmask", 0, "prefix length, 0 to 32 for IPv4 or 0 to 128 for IPv6")
 	flags.StringVar(&f.prefixType, "type", "", "prefix type, public or private")
 	flags.StringVar(&f.vlan, "vlan", "", "identifier of an existing VLAN to attach the prefix to")
 	flags.BoolVar(&f.newVLAN, "new-vlan", false, "create a new VLAN for the prefix instead of naming one with --vlan")
 	flags.StringVar(&f.vlanDescription, "vlan-description", "", "customer description of the VLAN created with --new-vlan")
-	flags.BoolVar(&f.createEmpty, "create-empty", false, "create the prefix without reserving its addresses")
+	flags.BoolVar(&f.createEmpty, "create-empty", false, "create the prefix with its addresses inactive instead of reserved")
 	flags.BoolVar(&f.redundancy, "router-redundancy", false, "enable router redundancy")
 	flags.BoolVar(&f.vmProvisioning, "vm-provisioning", false, "allow virtual machines to be provisioned into the prefix")
 	flags.StringVar(&f.description, "description", "", "customer description")
@@ -212,6 +212,10 @@ func (f *prefixCreateFlags) payload(flags *pflag.FlagSet) (prefix.Create, error)
 
 	if f.vlan != "" && f.newVLAN {
 		return prefix.Create{}, errmap.Usagef("--vlan and --new-vlan cannot be combined: attach to an existing VLAN or create one")
+	}
+
+	if f.vlanDescription != "" && !f.newVLAN {
+		return prefix.Create{}, errmap.Usagef("--vlan-description requires --new-vlan: it describes the VLAN created with the prefix")
 	}
 
 	if f.vlan != "" {

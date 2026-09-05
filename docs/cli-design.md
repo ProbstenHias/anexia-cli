@@ -46,7 +46,7 @@ verb.
 | `list` | none | `List` | Paged. Always available if the Engine can enumerate the resource. |
 | `get` | `<id>` | `Get` | One object by identifier. |
 | `create` | none, flags carry the payload | `Create` | |
-| `update` | `<id>`, flags carry the changes | `Get` then `Update` | |
+| `update` | `<id>`, flags carry the changes | `Get` then `Update` | `network prefix` sends a sparse `Update` without the read, see below. |
 | `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. |
 
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the
@@ -166,8 +166,8 @@ that accepts sorting.
 
 Write verbs on resources that report a provisioning state will get `--wait` and `--wait-timeout`.
 Resources without a state must not get the flags at all, so `--wait` is never accepted only to
-fail later. `network vlan` is the first implemented resource that reports one (`Pending`, `Active`,
-`Marked for deletion`); its `--wait` is still to come.
+fail later. `network vlan` (`Pending`, `Active`, `Marked for deletion`) and `network prefix` (`status`)
+are the implemented resources that report one; their `--wait` is still to come.
 
 An `update` that names no field is refused before the write. The Engine would accept it, and on a
 resource that versions its contents that means a revision nobody asked for, reported as success.
@@ -216,8 +216,9 @@ slash back into structure. Anything else about a valid identifier is the Engine'
 Four formats, one flag.
 
 `table` is the default and is meant for humans: aligned columns, uppercase headers, no borders.
-Column sets are short on purpose, four or five fields, because a table wider than a terminal is
-useless. The full object is one `-o json` away.
+Column sets are short on purpose, up to five fields, because a table wider than a terminal is
+useless. Fewer when the Engine returns less: a prefix write is answered with the list summary,
+so `network prefix create` and `update` show its three fields. The full object is one `-o json` away.
 
 `tsv` is `table` without the alignment: raw values, lowercase headers, tab-separated. This is the
 one to pipe into `cut` and `awk`.

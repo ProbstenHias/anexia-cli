@@ -513,13 +513,17 @@ const onePrefix = `{"identifier":"p-1","name":"10.0.0.0/24","description_custome
 // rides along.
 func TestNetworkPrefixCreateSendsTheLegacyCreateBody(t *testing.T) {
 	isolate(t)
-	srv, last := server(t, http.StatusOK, onePrefix)
+
+	var seen []request
+	srv := recordingServer(t, &seen, onePrefix)
 
 	stdout, _, err := run(t, "network", "prefix", "create",
 		"--location", "l-1", "--version", "4", "--netmask", "24", "--type", "private",
 		"--vlan", "v-1", "--description", "office", "--vm-provisioning",
-		"--token", "tok", "--api-base-url", srv.URL)
+		"--token", "tok", "--api-base-url", srv)
 	require.NoError(t, err)
+	require.Len(t, seen, 1, "create is one POST, nothing is read before or after")
+	last := seen[0]
 	require.Equal(t, http.MethodPost, last.method)
 	require.Equal(t, "/api/ipam/v1/prefix.json", last.path)
 
@@ -551,8 +555,10 @@ func TestNetworkPrefixCreatePublicWithANewVlan(t *testing.T) {
 	isolate(t)
 	srv, last := server(t, http.StatusOK, onePrefix)
 
+	// /128 is the longest IPv6 prefix there is and must still be accepted;
+	// the IPv4 counterpart /32 is covered below.
 	stdout, _, err := run(t, "network", "prefix", "create", "-o", "json",
-		"--location", "l-1", "--version", "6", "--netmask", "64", "--type", "public",
+		"--location", "l-1", "--version", "6", "--netmask", "128", "--type", "public",
 		"--new-vlan", "--vlan-description", "new office vlan", "--create-empty",
 		"--router-redundancy", "--organization", "o-1",
 		"--token", "tok", "--api-base-url", srv.URL)
@@ -564,7 +570,7 @@ func TestNetworkPrefixCreatePublicWithANewVlan(t *testing.T) {
 		"location":                  "l-1",
 		"version":                   float64(6),
 		"type":                      float64(0),
-		"netmask":                   float64(64),
+		"netmask":                   float64(128),
 		"new_vlan":                  true,
 		"create_empty":              true,
 		"router_redundancy":         true,
@@ -572,19 +578,32 @@ func TestNetworkPrefixCreatePublicWithANewVlan(t *testing.T) {
 		"organization":              "o-1",
 	}, sent)
 
-	// -o json prints the Engine's object so scripts can read the identifier.
-	var created map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &created))
-	require.Equal(t, "p-1", created["identifier"])
+	// -o json prints the Engine's object, whole, so scripts see every field
+	// the Engine answered with and not a projection of it.
+	require.JSONEq(t, onePrefix, stdout)
+}
+
+// /32 is a single IPv4 address and the longest prefix the version allows; the
+// bound is inclusive, so it goes through.
+func TestNetworkPrefixCreateAcceptsTheLongestIPv4Prefix(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, onePrefix)
+
+	_, _, err := run(t, "network", "prefix", "create",
+		"--location", "l-1", "--version", "4", "--netmask", "32", "--type", "private",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodPost, last.method)
+	require.Contains(t, last.body, `"netmask":32`)
 }
 
 // Every rejected flag combination is rejected before anything is sent.
 func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
 	base := []string{"--location", "l-1", "--version", "4", "--netmask", "24", "--type", "private", "--vlan", "v-1"}
-	without := func(flag string) []string {
+	without := func(flags ...string) []string {
 		out := make([]string, 0, len(base))
 		for i := 0; i < len(base); i += 2 {
-			if base[i] != flag {
+			if !slices.Contains(flags, base[i]) {
 				out = append(out, base[i], base[i+1])
 			}
 		}
@@ -603,7 +622,17 @@ func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
 		{name: "unknown version", args: append(without("--version"), "--version", "5"), want: "--version 5 must be 4 or 6"},
 		{name: "unknown type", args: append(without("--type"), "--type", "shared"), want: `--type "shared" must be public or private`},
 		{name: "netmask below zero", args: append(without("--netmask"), "--netmask", "-1"), want: "--netmask"},
+		// A netmask longer than the address has no meaning, and the bound
+		// follows the version: 33 is fine for IPv6 and wrong for IPv4.
+		{name: "netmask past ipv4", args: append(without("--netmask"), "--netmask", "33"), want: "--netmask 33 must be between 0 and 32 for IPv4"},
+		{name: "netmask past ipv6", args: append(without("--version", "--netmask"), "--version", "6", "--netmask", "129"), want: "--netmask 129 must be between 0 and 128 for IPv6"},
 		{name: "both an existing and a new vlan", args: append(slices.Clone(base), "--new-vlan"), want: "--vlan and --new-vlan"},
+		// The VLAN identifier rides in the body, but a value with a path
+		// separator cannot name a VLAN and is refused like any identifier.
+		{name: "vlan with a slash", args: append(without("--vlan"), "--vlan", "v/1"), want: `vlan "v/1" does not name a vlan`},
+		// A description for the new VLAN without asking for a new VLAN has
+		// nothing to describe; the Engine would ignore or reject it.
+		{name: "vlan description without a new vlan", args: append(slices.Clone(base), "--vlan-description", "lab"), want: "--vlan-description requires --new-vlan"},
 	}
 
 	for _, tt := range tests {
@@ -704,16 +733,75 @@ func TestNetworkPrefixUpdateReportsAFailedWrite(t *testing.T) {
 	require.Contains(t, errmap.Message(err), `updating prefix "p-1"`)
 }
 
+// The write verbs put the identifier in the URL path the same way get does, so
+// they share get's two guarantees: a value that cannot stay in one path segment
+// is refused before anything is sent, and one that could end the path early is
+// escaped so it addresses the named prefix and leaks nothing into the query.
+// On update and delete the alternative is writing to or deleting the wrong
+// object.
+func TestNetworkPrefixWriteVerbsGuardTheIdentifier(t *testing.T) {
+	verbs := []struct {
+		name   string
+		args   func(id string) []string
+		method string
+	}{
+		{
+			name:   "update",
+			args:   func(id string) []string { return []string{"network", "prefix", "update", id, "--description", "lab"} },
+			method: http.MethodPut,
+		},
+		{
+			name:   "delete",
+			args:   func(id string) []string { return []string{"network", "prefix", "delete", id, "--yes"} },
+			method: http.MethodDelete,
+		},
+	}
+
+	for _, verb := range verbs {
+		t.Run(verb.name+" refuses an identifier with a slash", func(t *testing.T) {
+			isolate(t)
+
+			var sent []request
+			srv := recordingServer(t, &sent, onePrefix)
+
+			args := append(verb.args("p/1"), "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), `prefix "p/1" does not name a prefix`)
+			require.Empty(t, sent, "an identifier that cannot be a path segment must not reach the Engine")
+		})
+
+		t.Run(verb.name+" escapes the identifier", func(t *testing.T) {
+			isolate(t)
+
+			var sent []request
+			srv := recordingServer(t, &sent, onePrefix)
+
+			args := append(verb.args("p 1?x=y"), "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Len(t, sent, 1)
+			require.Equal(t, verb.method, sent[0].method)
+			require.Equal(t, "/api/ipam/v1/prefix.json/p 1?x=y", sent[0].path)
+			require.Empty(t, sent[0].query, "the identifier must not leak into the query string")
+		})
+	}
+}
+
 func TestNetworkPrefixDeleteConfirms(t *testing.T) {
 	isolate(t)
-	srv, last := server(t, http.StatusOK, `{}`)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
 
 	stdout, stderr, err := runWithInput(t, "y\n", "network", "prefix", "delete", "p-1",
-		"--token", "tok", "--api-base-url", srv.URL)
+		"--token", "tok", "--api-base-url", srv)
 	require.NoError(t, err)
 	require.Empty(t, stdout, "notes belong on stderr, stdout carries data only")
-	require.Equal(t, http.MethodDelete, last.method)
-	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", last.path)
+	require.Len(t, sent, 1, "delete is one DELETE, nothing is read before or after")
+	require.Equal(t, http.MethodDelete, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", sent[0].path)
 	require.Contains(t, stderr, `delete prefix "p-1"`)
 	require.Contains(t, stderr, "deleted prefix p-1")
 }
@@ -726,7 +814,9 @@ func TestNetworkPrefixDeleteWithYesSkipsThePrompt(t *testing.T) {
 		"--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
 	require.Equal(t, http.MethodDelete, last.method)
-	require.NotContains(t, stderr, `delete prefix "p-1"?`)
+	// The prompt ends in "[y/N]"; with --yes no question is asked at all.
+	require.NotContains(t, stderr, "[y/N]")
+	require.Contains(t, stderr, "deleted prefix p-1")
 }
 
 func TestNetworkPrefixDeleteStopsOnARefusal(t *testing.T) {
