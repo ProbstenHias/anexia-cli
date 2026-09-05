@@ -415,6 +415,7 @@ var invocationFlags = map[string]string{
 	"description": "placeholder",
 	"version":     "4",
 	"netmask":     "24",
+	"vlan":        "placeholder",
 }
 
 // commandInvocationFlags override invocationFlags for one command where a

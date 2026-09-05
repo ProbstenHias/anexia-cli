@@ -541,6 +541,7 @@ func TestNetworkPrefixCreateSendsTheLegacyCreateBody(t *testing.T) {
 	last := seen[0]
 	require.Equal(t, http.MethodPost, last.method)
 	require.Equal(t, "/api/ipam/v1/prefix.json", last.path)
+	require.Empty(t, last.query, "the payload rides in the body, nothing in the query")
 
 	var sent map[string]any
 	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
@@ -608,7 +609,7 @@ func TestNetworkPrefixCreateAcceptsBothNetmaskBounds(t *testing.T) {
 
 			_, _, err := run(t, "network", "prefix", "create",
 				"--location", "l-1", "--version", "4", "--netmask", netmask, "--type", "private",
-				"--token", "tok", "--api-base-url", srv.URL)
+				"--vlan", "v-1", "--token", "tok", "--api-base-url", srv.URL)
 			require.NoError(t, err)
 			require.Equal(t, http.MethodPost, last.method)
 
@@ -651,6 +652,10 @@ func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
 		{name: "netmask past ipv4", args: append(without("--netmask"), "--netmask", "33"), want: "--netmask 33 must be between 0 and 32 for IPv4"},
 		{name: "netmask past ipv6", args: append(without("--version", "--netmask"), "--version", "6", "--netmask", "129"), want: "--netmask 129 must be between 0 and 128 for IPv6"},
 		{name: "both an existing and a new vlan", args: append(slices.Clone(base), "--new-vlan"), want: "--vlan and --new-vlan"},
+		// A prefix lives in a VLAN. The library's NewCreate takes the VLAN as
+		// a required value, so asking for neither an existing nor a new one is
+		// a mistake the user should hear about before the Engine does.
+		{name: "neither an existing nor a new vlan", args: without("--vlan"), want: "--vlan or --new-vlan is required"},
 		// The VLAN identifier rides in the body, but a value with a path
 		// separator cannot name a VLAN and is refused like any identifier.
 		{name: "vlan with a slash", args: append(without("--vlan"), "--vlan", "v/1"), want: `vlan "v/1" does not name a vlan`},
@@ -852,6 +857,7 @@ func TestNetworkPrefixDeleteConfirms(t *testing.T) {
 	require.Len(t, sent, 1, "delete is one DELETE, nothing is read before or after")
 	require.Equal(t, http.MethodDelete, sent[0].method)
 	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", sent[0].path)
+	require.Empty(t, sent[0].body, "a delete names the prefix in the path and carries no body")
 	require.Contains(t, stderr, `delete prefix "p-1"`)
 	require.Contains(t, stderr, "deleted prefix p-1")
 }

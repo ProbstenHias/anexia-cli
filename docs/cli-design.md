@@ -47,7 +47,7 @@ verb.
 | `get` | `<id>` | `Get` | One object by identifier. |
 | `create` | none, flags carry the payload | `Create` | |
 | `update` | `<id>`, flags carry the changes | Read then `Update` | The read is `Get`, or `List` where the Engine has no single-object read (`dns record`). `network prefix` sends a sparse `Update` without the read, see below. |
-| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. |
+| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. The legacy clients (`core tag`, `network prefix`) call it `Delete`. |
 
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the
 Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `create` that
@@ -218,7 +218,8 @@ Four formats, one flag.
 `table` is the default and is meant for humans: aligned columns, uppercase headers, no borders.
 Column sets are short on purpose, up to five fields, because a table wider than a terminal is
 useless. Fewer when the Engine returns less: a prefix write is answered with the list summary,
-so `network prefix create` and `update` show its three fields. The full object is one `-o json` away.
+so `network prefix create` and `update` show its three fields, and the full object is a
+`network prefix get <id>` away. Everywhere else the full object is one `-o json` away.
 
 `tsv` is `table` without the alignment: raw values, lowercase headers, tab-separated. This is the
 one to pipe into `cut` and `awk`.
