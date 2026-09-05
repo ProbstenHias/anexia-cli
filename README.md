@@ -196,8 +196,8 @@ implemented one. The distinction matters to whoever picks the work up, so the ta
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
 The `core`, `network` and `dns` groups below are implemented. Within `network`, `vlan` has every
-verb because go-anxcloud models it generically; `prefix` and `address` read only for now, because
-they are hand-written against the older client and their write verbs are still to be declared.
+verb because go-anxcloud models it generically; `prefix` has every verb hand-written against the
+older client, and `address` is read only for now because its write verbs are still to be declared.
 Everything after those three groups is a roadmap of what the library can reach, read off
 go-anxcloud v0.14.5 and not verified against the Engine.
 
@@ -215,7 +215,7 @@ go-anxcloud v0.14.5 and not verified against the Engine.
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `network vlan` | [x] | [x] | [x] | [x] | [x] | `--status` and `--location` filters [x]; a VLAN's location is fixed at creation, so `update` has no `--location` |
-| `network prefix` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x] |
+| `network prefix` | [x] | [x] | [x] | [x] | [x] | `--search` [x]; the legacy client can only update the description, so `update` offers nothing else |
 | `network address` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x]; field filters [x]; `reserve` [ ] |
 
 ### vsphere
@@ -313,8 +313,8 @@ handle updates differently from the other four, so their write verbs may not all
 
 The write verbs landed with the `dns` group, the first resources the Engine lets the CLI write
 through the registry, and `network vlan` followed the same way. Most other resources reachable today
-are read-only in the Engine anyway. `core tag` drives the legacy client directly; prefixes and addresses are
-writable in the library and still wait to be declared on the registry, so that the two halves of
+are read-only in the Engine anyway. `core tag` and `network prefix` drive the legacy client directly;
+addresses are writable in the library and still wait to be declared, so that the two halves of
 the CLI keep offering the same verbs.
 
 ## Development

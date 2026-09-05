@@ -64,8 +64,9 @@ A resource that is only reachable inside another, such as a DNS record inside it
 without one there is no collection to address at all.
 
 Some resources the CLI already reaches are writable in the Engine and do not offer the verbs yet,
-`network prefix` and `network address` among them. They were waiting for the registry rather than
-growing a hand-written `create` it could not match; now they are waiting only to be declared.
+`network address` among them. `network prefix` shows how they get declared: hand-written against
+the legacy client, but with the same verbs, flags-as-payload, confirmation and error shape as the
+registry, so a user cannot tell which half of the CLI served the command.
 
 Two extra verbs exist for relations, meaning a collection a resource owns that has no identity of
 its own. A resource's tags are the example:
@@ -178,7 +179,11 @@ far: the Engine's VLAN update can change only `description_customer` and `vm_pro
 hook clears what the read filled in, the Engine-assigned name, role and status and the location
 that is fixed at creation, and sends the identifier, `vm_provisioning` and, because go-anxcloud marks
 it `omitempty`, `description_customer` only when it is non-empty. That is also why `--description ""`
-is refused: the Engine would never see it.
+is refused: the Engine would never see it. `network prefix update` keeps the same promise without a
+read: the legacy client's update body is sparse, every field `omitempty`, so it sends the one named
+field and the Engine keeps the rest. It offers `--description` only: the legacy update also carries
+`name`, but a prefix's name is its CIDR, assigned by the Engine, so it is not offered for the same
+reason `dns zone update` has no `--name`. `--description ""` is refused for the same reason `vlan` does.
 
 A field the Engine cannot change safely does not get a flag. `dns zone update` has no `--name`,
 because the Engine's zone update carries the name only in the request body with no old name

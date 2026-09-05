@@ -50,18 +50,28 @@ func TestNetworkWithoutSubcommandPrintsHelp(t *testing.T) {
 	require.Contains(t, stdout, "address")
 }
 
-func TestNetworkLegacyNounsOnlyHaveReadVerbs(t *testing.T) {
+func TestNetworkAddressOnlyHasReadVerbs(t *testing.T) {
 	isolate(t)
 
-	for _, noun := range []string{"prefix", "address"} {
-		stdout, _, err := run(t, "network", noun)
-		require.NoError(t, err)
-		require.Contains(t, stdout, "list")
-		require.Contains(t, stdout, "get")
-		for _, absent := range []string{"create", "update", "delete", "destroy", "reserve"} {
-			require.NotContains(t, stdout, absent,
-				"write verbs wait for the resource registry to grow them")
-		}
+	stdout, _, err := run(t, "network", "address")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "list")
+	require.Contains(t, stdout, "get")
+	for _, absent := range []string{"create", "update", "delete", "destroy", "reserve"} {
+		require.NotContains(t, stdout, absent,
+			"address write verbs are still to be declared")
+	}
+}
+
+// Prefixes are writable in go-anxcloud's legacy ipam client, so the noun offers
+// the same five verbs a registry-driven noun does.
+func TestNetworkPrefixHasEveryVerb(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "prefix")
+	require.NoError(t, err)
+	for _, verb := range []string{"list", "get", "create", "update", "delete"} {
+		require.Contains(t, stdout, verb)
 	}
 }
 
@@ -493,6 +503,254 @@ func TestNetworkPrefixGetJSONKeepsFullObject(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
 	require.Equal(t, "internal note", got["description_internal"])
 	require.Equal(t, true, got["router_redundancy"])
+}
+
+const onePrefix = `{"identifier":"p-1","name":"10.0.0.0/24","description_customer":"office"}`
+
+// The Engine's prefix create takes the location, the IP version, the prefix
+// type and the netmask; go-anxcloud's legacy Create struct is the contract, so
+// the whole body is pinned and nothing the Engine assigns (identifier, name)
+// rides along.
+func TestNetworkPrefixCreateSendsTheLegacyCreateBody(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, onePrefix)
+
+	stdout, _, err := run(t, "network", "prefix", "create",
+		"--location", "l-1", "--version", "4", "--netmask", "24", "--type", "private",
+		"--vlan", "v-1", "--description", "office", "--vm-provisioning",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodPost, last.method)
+	require.Equal(t, "/api/ipam/v1/prefix.json", last.path)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
+	require.Equal(t, map[string]any{
+		"location":             "l-1",
+		"version":              float64(4),
+		"type":                 float64(1),
+		"netmask":              float64(24),
+		"vlan":                 "v-1",
+		"create_empty":         false,
+		"description_customer": "office",
+		"vm_provisioning":      true,
+	}, sent)
+
+	// The created prefix is rendered with the same columns as list, because
+	// the Engine answers create with the list summary, not the full object.
+	require.Equal(t,
+		"IDENTIFIER   NAME          DESCRIPTION\n"+
+			"p-1          10.0.0.0/24   office\n",
+		stdout)
+}
+
+// A public prefix is type 0 on the wire and a new VLAN is requested with a
+// flag instead of an identifier; both spellings are the user's, the numbers
+// are the Engine's.
+func TestNetworkPrefixCreatePublicWithANewVlan(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, onePrefix)
+
+	stdout, _, err := run(t, "network", "prefix", "create", "-o", "json",
+		"--location", "l-1", "--version", "6", "--netmask", "64", "--type", "public",
+		"--new-vlan", "--vlan-description", "new office vlan", "--create-empty",
+		"--router-redundancy", "--organization", "o-1",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
+	require.Equal(t, map[string]any{
+		"location":                  "l-1",
+		"version":                   float64(6),
+		"type":                      float64(0),
+		"netmask":                   float64(64),
+		"new_vlan":                  true,
+		"create_empty":              true,
+		"router_redundancy":         true,
+		"description_vlan_customer": "new office vlan",
+		"organization":              "o-1",
+	}, sent)
+
+	// -o json prints the Engine's object so scripts can read the identifier.
+	var created map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &created))
+	require.Equal(t, "p-1", created["identifier"])
+}
+
+// Every rejected flag combination is rejected before anything is sent.
+func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
+	base := []string{"--location", "l-1", "--version", "4", "--netmask", "24", "--type", "private", "--vlan", "v-1"}
+	without := func(flag string) []string {
+		out := make([]string, 0, len(base))
+		for i := 0; i < len(base); i += 2 {
+			if base[i] != flag {
+				out = append(out, base[i], base[i+1])
+			}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing location", args: without("--location"), want: "--location is required"},
+		{name: "missing version", args: without("--version"), want: "--version is required"},
+		{name: "missing netmask", args: without("--netmask"), want: "--netmask is required"},
+		{name: "missing type", args: without("--type"), want: "--type is required"},
+		{name: "unknown version", args: append(without("--version"), "--version", "5"), want: "--version 5 must be 4 or 6"},
+		{name: "unknown type", args: append(without("--type"), "--type", "shared"), want: `--type "shared" must be public or private`},
+		{name: "netmask below zero", args: append(without("--netmask"), "--netmask", "-1"), want: "--netmask"},
+		{name: "both an existing and a new vlan", args: append(slices.Clone(base), "--new-vlan"), want: "--vlan and --new-vlan"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, onePrefix)
+
+			args := append([]string{"network", "prefix", "create"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv.URL)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, last.method, "a usage error must not reach the Engine")
+		})
+	}
+}
+
+// The name is the CIDR the Engine assigns and the location, version, type and
+// netmask are fixed at creation, so update offers exactly the description.
+func TestNetworkPrefixUpdateOffersOnlyTheDescription(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "prefix", "update", "--help")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "--description")
+	for _, absent := range []string{"--name", "--location", "--version", "--netmask", "--type", "--vlan"} {
+		require.NotContains(t, stdout, absent)
+	}
+}
+
+// go-anxcloud's legacy prefix Update drops every empty field from the body, so
+// the Engine only ever sees the fields the user named and keeps the rest. That
+// is the same promise the registry's read-then-write update makes, without a
+// read: the PUT body is pinned to exactly the one field.
+func TestNetworkPrefixUpdateSendsOnlyTheNamedField(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, strings.Replace(onePrefix, `"office"`, `"lab"`, 1))
+
+	stdout, _, err := run(t, "network", "prefix", "update", "p-1", "--description", "lab",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodPut, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", sent[0].path)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{"description_customer": "lab"}, body)
+
+	// The Engine's answer is rendered, so the user sees the state after the
+	// write and not what they typed.
+	require.Equal(t,
+		"IDENTIFIER   NAME          DESCRIPTION\n"+
+			"p-1          10.0.0.0/24   lab\n",
+		stdout)
+}
+
+// A user who passes --description "" wants the description gone. go-anxcloud
+// drops an empty description from the request body, so the Engine would never
+// see the change and the command would report a success that changed nothing.
+func TestNetworkPrefixUpdateRefusesAnEmptyDescription(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, onePrefix)
+
+	_, _, err := run(t, "network", "prefix", "update", "p-1", "--description", "",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "--description")
+	require.Empty(t, sent, "a refused update must not be written")
+}
+
+func TestNetworkPrefixUpdateWithNothingChangedIsRejected(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, onePrefix)
+
+	_, _, err := run(t, "network", "prefix", "update", "p-1", "--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "nothing to update")
+	require.Empty(t, sent, "nothing changed, so nothing may be written")
+}
+
+func TestNetworkPrefixUpdateReportsAFailedWrite(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusInternalServerError, `{"error":{"code":500}}`)
+
+	_, _, err := run(t, "network", "prefix", "update", "p-1", "--description", "lab",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Contains(t, errmap.Message(err), `updating prefix "p-1"`)
+}
+
+func TestNetworkPrefixDeleteConfirms(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	stdout, stderr, err := runWithInput(t, "y\n", "network", "prefix", "delete", "p-1",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Empty(t, stdout, "notes belong on stderr, stdout carries data only")
+	require.Equal(t, http.MethodDelete, last.method)
+	require.Equal(t, "/api/ipam/v1/prefix.json/p-1", last.path)
+	require.Contains(t, stderr, `delete prefix "p-1"`)
+	require.Contains(t, stderr, "deleted prefix p-1")
+}
+
+func TestNetworkPrefixDeleteWithYesSkipsThePrompt(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderr, err := run(t, "network", "prefix", "destroy", "p-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, last.method)
+	require.NotContains(t, stderr, `delete prefix "p-1"?`)
+}
+
+func TestNetworkPrefixDeleteStopsOnARefusal(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
+
+	_, _, err := runWithInput(t, "n\n", "network", "prefix", "delete", "p-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Empty(t, sent, "a refused delete must not reach the Engine")
+}
+
+func TestNetworkPrefixDeleteReportsTheFailure(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusNotFound, `{"error":{"code":404}}`)
+
+	_, _, err := run(t, "network", "prefix", "delete", "p-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), `deleting prefix "p-1"`)
 }
 
 func TestNetworkPrefixesPluralAlias(t *testing.T) {
