@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.4.0...v0.5.0) (2026-09-05)
+
+
+### Features
+
+* **network:** add prefix create, update and delete ([#14](https://github.com/ProbstenHias/anexia-cli/issues/14)) ([07d0d3b](https://github.com/ProbstenHias/anexia-cli/commit/07d0d3b37c39e503c47f5cdf894acfda4075fa16))
+
 ## [0.4.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.3.0...v0.4.0) (2026-09-04)
 
 
