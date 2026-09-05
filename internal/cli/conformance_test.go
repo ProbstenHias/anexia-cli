@@ -115,6 +115,9 @@ var engineActions = map[string]string{
 	"anexia network vlan delete":      `deleting vlan "placeholder"`,
 	"anexia network prefix list":      "listing prefixes",
 	"anexia network prefix get":       `reading prefix "placeholder"`,
+	"anexia network prefix create":    "creating prefix",
+	"anexia network prefix update":    `updating prefix "placeholder"`,
+	"anexia network prefix delete":    `deleting prefix "placeholder"`,
 	"anexia network address list":     "listing addresses",
 	"anexia network address get":      `reading address "placeholder"`,
 	"anexia dns zone list":            "listing zones",
@@ -241,10 +244,11 @@ func TestConformanceLeafAliasesUseKnownVerbs(t *testing.T) {
 	t.Parallel()
 
 	allowed := map[string]map[string]bool{
-		"anexia core tag delete":     {"destroy": true},
-		"anexia network vlan delete": {"destroy": true},
-		"anexia dns zone delete":     {"destroy": true},
-		"anexia dns record delete":   {"destroy": true},
+		"anexia core tag delete":       {"destroy": true},
+		"anexia network vlan delete":   {"destroy": true},
+		"anexia network prefix delete": {"destroy": true},
+		"anexia dns zone delete":       {"destroy": true},
+		"anexia dns record delete":     {"destroy": true},
 	}
 	checked := 0
 
@@ -409,6 +413,16 @@ var invocationFlags = map[string]string{
 	"admin-email": "admin@example.com",
 	"location":    "placeholder",
 	"description": "placeholder",
+	"version":     "4",
+	"netmask":     "24",
+	"vlan":        "placeholder",
+}
+
+// commandInvocationFlags override invocationFlags for one command where a
+// flag name is shared with a different vocabulary: "type" is a record type on
+// a DNS record and public or private on a prefix.
+var commandInvocationFlags = map[string]map[string]string{
+	"anexia network prefix create": {"type": "private"},
 }
 
 // documentFile writes a file for the commands that read one, so --file names
@@ -459,9 +473,15 @@ func invocation(t *testing.T, cmd *cobra.Command) []string {
 	}
 
 	for name, value := range invocationFlags {
-		if cmd.Flags().Lookup(name) != nil {
-			args = append(args, "--"+name, value)
+		if cmd.Flags().Lookup(name) == nil {
+			continue
 		}
+
+		if override, ok := commandInvocationFlags[cmd.CommandPath()][name]; ok {
+			value = override
+		}
+
+		args = append(args, "--"+name, value)
 	}
 
 	// A document-shaped operation needs a file that exists, and refuses to
