@@ -77,14 +77,16 @@ func TestNetworkPrefixHasEveryVerb(t *testing.T) {
 }
 
 // A user reading `create --help` must learn what --create-empty really does:
-// go-anxcloud's integration test pins the Engine behavior to "only network,
-// broadcast and router addresses are created", not "addresses inactive".
+// go-anxcloud's integration test pins the Engine behavior for an IPv4 prefix
+// to "only network, broadcast and router addresses are created", not
+// "addresses inactive". IPv6 has no broadcast address, so the help must not
+// promise one unconditionally.
 func TestNetworkPrefixCreateHelpExplainsCreateEmpty(t *testing.T) {
 	isolate(t)
 
 	stdout, _, err := run(t, "network", "prefix", "create", "--help")
 	require.NoError(t, err)
-	require.Contains(t, stdout, "only the network, broadcast and router addresses")
+	require.Contains(t, stdout, "only the infrastructure addresses (network, broadcast and router for IPv4)")
 	require.NotContains(t, stdout, "inactive")
 }
 
@@ -652,6 +654,8 @@ func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
 		// The VLAN identifier rides in the body, but a value with a path
 		// separator cannot name a VLAN and is refused like any identifier.
 		{name: "vlan with a slash", args: append(without("--vlan"), "--vlan", "v/1"), want: `vlan "v/1" does not name a vlan`},
+		{name: "vlan of two dots", args: append(without("--vlan"), "--vlan", ".."), want: `vlan ".." does not name a vlan`},
+		{name: "vlan of whitespace", args: append(without("--vlan"), "--vlan", " "), want: `vlan " " does not name a vlan`},
 		// A description for the new VLAN without asking for a new VLAN has
 		// nothing to describe; the Engine would ignore or reject it.
 		{name: "vlan description without a new vlan", args: append(slices.Clone(base), "--vlan-description", "lab"), want: "--vlan-description requires --new-vlan"},
@@ -789,20 +793,34 @@ func TestNetworkPrefixWriteVerbsGuardTheIdentifier(t *testing.T) {
 		},
 	}
 
+	// Every value that cannot stay in one URL path segment must be refused, not
+	// only a slash: an empty or dot-only id would address the collection or
+	// whatever sits above the endpoint.
+	badIDs := map[string]string{
+		"a slash":     "p/1",
+		"nothing":     "",
+		"whitespace":  "  ",
+		"a dot":       ".",
+		"two dots":    "..",
+		"padded dots": " .. ",
+	}
+
 	for _, verb := range verbs {
-		t.Run(verb.name+" refuses an identifier with a slash", func(t *testing.T) {
-			isolate(t)
+		for label, id := range badIDs {
+			t.Run(verb.name+" refuses "+label, func(t *testing.T) {
+				isolate(t)
 
-			var sent []request
-			srv := recordingServer(t, &sent, onePrefix)
+				var sent []request
+				srv := recordingServer(t, &sent, onePrefix)
 
-			args := append(verb.args("p/1"), "--token", "tok", "--api-base-url", srv)
-			_, _, err := run(t, args...)
-			require.Error(t, err)
-			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
-			require.Contains(t, errmap.Message(err), `prefix "p/1" does not name a prefix`)
-			require.Empty(t, sent, "an identifier that cannot be a path segment must not reach the Engine")
-		})
+				args := append(verb.args(id), "--token", "tok", "--api-base-url", srv)
+				_, _, err := run(t, args...)
+				require.Error(t, err)
+				require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+				require.Contains(t, errmap.Message(err), fmt.Sprintf("prefix %q does not name a prefix", id))
+				require.Empty(t, sent, "an identifier that cannot be a path segment must not reach the Engine")
+			})
+		}
 
 		t.Run(verb.name+" escapes the identifier", func(t *testing.T) {
 			isolate(t)

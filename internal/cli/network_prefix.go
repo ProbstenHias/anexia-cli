@@ -176,7 +176,7 @@ func (f *prefixCreateFlags) register(flags *pflag.FlagSet) {
 	flags.StringVar(&f.vlan, "vlan", "", "identifier of an existing VLAN to attach the prefix to")
 	flags.BoolVar(&f.newVLAN, "new-vlan", false, "create a new VLAN for the prefix instead of naming one with --vlan")
 	flags.StringVar(&f.vlanDescription, "vlan-description", "", "customer description of the VLAN created with --new-vlan")
-	flags.BoolVar(&f.createEmpty, "create-empty", false, "create only the network, broadcast and router addresses instead of every address of the prefix")
+	flags.BoolVar(&f.createEmpty, "create-empty", false, "create only the infrastructure addresses (network, broadcast and router for IPv4) instead of every address of the prefix")
 	flags.BoolVar(&f.redundancy, "router-redundancy", false, "enable router redundancy")
 	flags.BoolVar(&f.vmProvisioning, "vm-provisioning", false, "allow virtual machines to be provisioned into the prefix")
 	flags.StringVar(&f.description, "description", "", "customer description")
