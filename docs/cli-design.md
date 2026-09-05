@@ -46,7 +46,7 @@ verb.
 | `list` | none | `List` | Paged. Always available if the Engine can enumerate the resource. |
 | `get` | `<id>` | `Get` | One object by identifier. |
 | `create` | none, flags carry the payload | `Create` | |
-| `update` | `<id>`, flags carry the changes | `Get` then `Update` | `network prefix` sends a sparse `Update` without the read, see below. |
+| `update` | `<id>`, flags carry the changes | Read then `Update` | The read is `Get`, or `List` where the Engine has no single-object read (`dns record`). `network prefix` sends a sparse `Update` without the read, see below. |
 | `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. |
 
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the

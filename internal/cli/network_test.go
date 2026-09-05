@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -583,18 +584,27 @@ func TestNetworkPrefixCreatePublicWithANewVlan(t *testing.T) {
 	require.JSONEq(t, onePrefix, stdout)
 }
 
-// /32 is a single IPv4 address and the longest prefix the version allows; the
-// bound is inclusive, so it goes through.
-func TestNetworkPrefixCreateAcceptsTheLongestIPv4Prefix(t *testing.T) {
-	isolate(t)
-	srv, last := server(t, http.StatusOK, onePrefix)
+// Both ends of the netmask range are inclusive: /0 is the whole address space
+// and /32 a single IPv4 address, and each goes through as typed.
+func TestNetworkPrefixCreateAcceptsBothNetmaskBounds(t *testing.T) {
+	for _, netmask := range []string{"0", "32"} {
+		t.Run("netmask "+netmask, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, onePrefix)
 
-	_, _, err := run(t, "network", "prefix", "create",
-		"--location", "l-1", "--version", "4", "--netmask", "32", "--type", "private",
-		"--token", "tok", "--api-base-url", srv.URL)
-	require.NoError(t, err)
-	require.Equal(t, http.MethodPost, last.method)
-	require.Contains(t, last.body, `"netmask":32`)
+			_, _, err := run(t, "network", "prefix", "create",
+				"--location", "l-1", "--version", "4", "--netmask", netmask, "--type", "private",
+				"--token", "tok", "--api-base-url", srv.URL)
+			require.NoError(t, err)
+			require.Equal(t, http.MethodPost, last.method)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal([]byte(last.body), &body))
+			want, err := strconv.Atoi(netmask)
+			require.NoError(t, err)
+			require.EqualValues(t, want, body["netmask"])
+		})
+	}
 }
 
 // Every rejected flag combination is rejected before anything is sent.
@@ -633,6 +643,9 @@ func TestNetworkPrefixCreateRejectsBadFlags(t *testing.T) {
 		// A description for the new VLAN without asking for a new VLAN has
 		// nothing to describe; the Engine would ignore or reject it.
 		{name: "vlan description without a new vlan", args: append(slices.Clone(base), "--vlan-description", "lab"), want: "--vlan-description requires --new-vlan"},
+		// Naming the flag is the mistake, not the value: an empty description
+		// is still a description for a VLAN that will not exist.
+		{name: "empty vlan description without a new vlan", args: append(slices.Clone(base), "--vlan-description", ""), want: "--vlan-description requires --new-vlan"},
 	}
 
 	for _, tt := range tests {
@@ -658,10 +671,17 @@ func TestNetworkPrefixUpdateOffersOnlyTheDescription(t *testing.T) {
 
 	stdout, _, err := run(t, "network", "prefix", "update", "--help")
 	require.NoError(t, err)
-	require.Contains(t, stdout, "--description")
-	for _, absent := range []string{"--name", "--location", "--version", "--netmask", "--type", "--vlan"} {
-		require.NotContains(t, stdout, absent)
+
+	// The local flag block is everything between "Flags:" and "Global Flags:",
+	// so any create-only flag leaking into update shows up here by name.
+	_, after, found := strings.Cut(stdout, "Flags:\n")
+	require.True(t, found)
+	local, _, _ := strings.Cut(after, "Global Flags:")
+	var names []string
+	for _, m := range regexp.MustCompile(`(?m)^\s+(?:-\w, )?--([\w-]+)`).FindAllStringSubmatch(local, -1) {
+		names = append(names, m[1])
 	}
+	require.Equal(t, []string{"description", "help"}, names)
 }
 
 // go-anxcloud's legacy prefix Update drops every empty field from the body, so

@@ -214,7 +214,7 @@ func (f *prefixCreateFlags) payload(flags *pflag.FlagSet) (prefix.Create, error)
 		return prefix.Create{}, errmap.Usagef("--vlan and --new-vlan cannot be combined: attach to an existing VLAN or create one")
 	}
 
-	if f.vlanDescription != "" && !f.newVLAN {
+	if flags.Changed("vlan-description") && !f.newVLAN {
 		return prefix.Create{}, errmap.Usagef("--vlan-description requires --new-vlan: it describes the VLAN created with the prefix")
 	}
 
