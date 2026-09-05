@@ -174,7 +174,7 @@ resource that versions its contents that means a revision nobody asked for, repo
 
 An `update` reads the object first, so a field the user did not name goes back exactly as the
 Engine returned it. That is a promise about what has to be typed, not about a sparse request body:
-the client serializes the whole object either way. `network vlan update` is the one exception so
+the client serializes the whole object either way. `network vlan update` is the one registry exception so
 far: the Engine's VLAN update can change only `description_customer` and `vm_provisioning`, so the
 hook clears what the read filled in, the Engine-assigned name, role and status and the location
 that is fixed at creation, and sends the identifier, `vm_provisioning` and, because go-anxcloud marks

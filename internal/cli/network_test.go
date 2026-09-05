@@ -76,6 +76,18 @@ func TestNetworkPrefixHasEveryVerb(t *testing.T) {
 	}
 }
 
+// A user reading `create --help` must learn what --create-empty really does:
+// go-anxcloud's integration test pins the Engine behavior to "only network,
+// broadcast and router addresses are created", not "addresses inactive".
+func TestNetworkPrefixCreateHelpExplainsCreateEmpty(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "prefix", "create", "--help")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "only the network, broadcast and router addresses")
+	require.NotContains(t, stdout, "inactive")
+}
+
 func TestNetworkVlanHasEveryVerb(t *testing.T) {
 	isolate(t)
 

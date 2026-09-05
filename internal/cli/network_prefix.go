@@ -18,9 +18,10 @@ import (
 // ipam/prefix client directly, sharing the paging and rendering helpers so the
 // result is indistinguishable from a Spec-driven noun.
 //
-// The write verbs drive the same legacy client. Its Create and Update structs
-// are the contract for what the Engine accepts, so the flags below mirror them
-// field for field and nothing else is sent.
+// The write verbs drive the same legacy client. Its Create struct is the
+// contract for what the Engine accepts, so the create flags mirror it field for
+// field and nothing else is sent. Update offers --description only; see
+// newNetworkPrefixUpdateCommand for why its Name field is left out.
 func newNetworkPrefixCommand(opts *globalOptions) *cobra.Command {
 	return resource.Noun("prefix", "prefixes", "Work with Anexia IP prefixes",
 		newNetworkPrefixListCommand(opts),
@@ -175,7 +176,7 @@ func (f *prefixCreateFlags) register(flags *pflag.FlagSet) {
 	flags.StringVar(&f.vlan, "vlan", "", "identifier of an existing VLAN to attach the prefix to")
 	flags.BoolVar(&f.newVLAN, "new-vlan", false, "create a new VLAN for the prefix instead of naming one with --vlan")
 	flags.StringVar(&f.vlanDescription, "vlan-description", "", "customer description of the VLAN created with --new-vlan")
-	flags.BoolVar(&f.createEmpty, "create-empty", false, "create the prefix with its addresses inactive instead of reserved")
+	flags.BoolVar(&f.createEmpty, "create-empty", false, "create only the network, broadcast and router addresses instead of every address of the prefix")
 	flags.BoolVar(&f.redundancy, "router-redundancy", false, "enable router redundancy")
 	flags.BoolVar(&f.vmProvisioning, "vm-provisioning", false, "allow virtual machines to be provisioned into the prefix")
 	flags.StringVar(&f.description, "description", "", "customer description")
