@@ -28,7 +28,8 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
 Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
-`network` and `dns`, and later `vsphere`, `kubernetes`, `lbaas`, `e5e`, `frontier`, `storage`.
+`network`, `dns` and `kubernetes`; roadmap groups include `vsphere`, `lbaas`, `e5e`, `frontier`,
+and `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
 

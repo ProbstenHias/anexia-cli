@@ -119,6 +119,19 @@ anexia dns zone apply example.com --file changeset.json
 records to create and records to delete. Both confirm first, and both read stdin with `--file -`,
 which needs `--yes` since the prompt would otherwise read the document.
 
+### Kubernetes
+
+```sh
+anexia kubernetes cluster create --name demo --location <location-id>
+anexia kubernetes node-pool create --name workers --cluster <cluster-id> --cpus 4 --memory 8 --disk 100
+anexia kubernetes cluster kubeconfig get <cluster-id> > kubeconfig
+anexia kubernetes node-pool list --cluster <cluster-id>
+```
+
+Sizes are entered in GiB on the command line and sent as bytes to the Engine. Passing an existing
+prefix turns off the Engine's automatic management of that prefix. `kubeconfig get` polls for the
+generated document and is bounded by `--timeout`.
+
 ### Global flags
 
 | Flag | Default | Description |
@@ -195,11 +208,11 @@ cannot reach it: either the library says the Engine has no such operation, or it
 implemented one. The distinction matters to whoever picks the work up, so the tables say which
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
-The `core`, `network` and `dns` groups below are implemented. Within `network`, `vlan` has every
+The `core`, `network`, `dns` and `kubernetes` groups below are implemented. Within `network`, `vlan` has every
 verb because go-anxcloud models it generically; `prefix` has every verb hand-written against the
 older client, and `address` is read only for now because its write verbs are still to be declared.
-Everything after those three groups is a roadmap of what the library can reach, read off
-go-anxcloud v0.14.5 and not verified against the Engine.
+The remaining groups, starting with `vsphere`, are roadmap items read off go-anxcloud v0.14.5 and
+not verified against the Engine.
 
 ### core
 
@@ -242,8 +255,8 @@ go-anxcloud v0.14.5 and not verified against the Engine.
 
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| `kubernetes cluster` | [ ] | [ ] | [ ] | [ ] | [ ] | `kubeconfig get`/`delete` [ ] |
-| `kubernetes node-pool` | [ ] | [ ] | [ ] | [ ] | [ ] | |
+| `kubernetes cluster` | [x] | [x] | [x] | - | [x] | `kubeconfig get`/`delete` [x]; updates unsupported by the library |
+| `kubernetes node-pool` | [x] | [x] | [x] | - | [x] | `--cluster` filter [x]; updates unsupported by the library |
 | `kubernetes disk` | [ ] | [ ] | [ ] | [ ] | [ ] | legacy client only |
 | `kubernetes network` | [ ] | [ ] | [ ] | [ ] | [ ] | legacy client only |
 
