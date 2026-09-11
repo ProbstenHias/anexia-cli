@@ -201,6 +201,7 @@ func NewRootCommand(d Deps) *cobra.Command {
 		newCoreCommand(opts),
 		newNetworkCommand(opts),
 		newDNSCommand(opts),
+		newKubernetesCommand(opts),
 		newConfigCommand(opts),
 		newVersionCommand(),
 		newMovedCommand("location", "anexia core location list"),
