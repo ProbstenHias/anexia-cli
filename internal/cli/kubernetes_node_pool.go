@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"strconv"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	kubernetesv1 "go.anx.io/go-anxcloud/pkg/apis/kubernetes/v1"
@@ -10,6 +8,16 @@ import (
 
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
 	"github.com/ProbstenHias/anexia-cli/internal/resource"
+)
+
+const (
+	gibibyte     = 1 << 30
+	minCPUs      = 1
+	maxCPUs      = 16
+	minMemoryGiB = 2
+	maxMemoryGiB = 64
+	minDiskGiB   = 20
+	maxDiskGiB   = 1600
 )
 
 // newKubernetesNodePoolCommand exposes node-pool lifecycle verbs. The library
@@ -36,27 +44,6 @@ func newKubernetesNodePoolCommand(opts *globalOptions) *cobra.Command {
 		Columns: []resource.Column[kubernetesv1.NodePool]{
 			{Name: "identifier", Value: func(nodePool *kubernetesv1.NodePool) string { return nodePool.Identifier }},
 			{Name: "name", Value: func(nodePool *kubernetesv1.NodePool) string { return nodePool.Name }},
-			{Name: "cluster", Value: func(nodePool *kubernetesv1.NodePool) string {
-				if nodePool.Cluster.Name != "" {
-					return nodePool.Cluster.Name
-				}
-				return nodePool.Cluster.Identifier
-			}},
-			{Name: "replicas", Value: func(nodePool *kubernetesv1.NodePool) string {
-				if nodePool.Replicas == nil {
-					return ""
-				}
-				return strconv.Itoa(*nodePool.Replicas)
-			}},
-			{Name: "cpus", Value: func(nodePool *kubernetesv1.NodePool) string { return strconv.Itoa(nodePool.CPUs) }},
-			{Name: "memory", Value: func(nodePool *kubernetesv1.NodePool) string { return gibibytes(nodePool.Memory) }},
-			{Name: "disk", Value: func(nodePool *kubernetesv1.NodePool) string { return gibibytes(nodePool.DiskSize) }},
-			{Name: "state", Value: func(nodePool *kubernetesv1.NodePool) string {
-				if nodePool.State.Text != "" {
-					return nodePool.State.Text
-				}
-				return nodePool.State.ID
-			}},
 		},
 	})
 }
@@ -70,7 +57,6 @@ func nodePoolCreateFlags(flags *pflag.FlagSet) func(*kubernetesv1.NodePool) erro
 	memory := flags.Int("memory", 0, "memory per node in GiB")
 	disk := flags.Int("disk", 0, "disk per node in GiB")
 	replicas := flags.Int("replicas", 0, "number of node replicas")
-	operatingSystem := flags.String("operating-system", string(kubernetesv1.FlatcarLinux), "operating system for nodes")
 
 	return func(nodePool *kubernetesv1.NodePool) error {
 		if *name == "" {
@@ -79,30 +65,24 @@ func nodePoolCreateFlags(flags *pflag.FlagSet) func(*kubernetesv1.NodePool) erro
 		if *cluster == "" {
 			return errmap.Usagef("--cluster is required")
 		}
-		if *cpus <= 0 {
-			return errmap.Usagef("--cpus must be greater than zero")
+		if *cpus < minCPUs || *cpus > maxCPUs {
+			return errmap.Usagef("--cpus must be between %d and %d", minCPUs, maxCPUs)
 		}
-		if *memory <= 0 {
-			return errmap.Usagef("--memory must be greater than zero")
+		if *memory < minMemoryGiB || *memory > maxMemoryGiB {
+			return errmap.Usagef("--memory must be between %d and %d", minMemoryGiB, maxMemoryGiB)
 		}
-		if *disk <= 0 {
-			return errmap.Usagef("--disk must be greater than zero")
+		if *disk < minDiskGiB || *disk > maxDiskGiB {
+			return errmap.Usagef("--disk must be between %d and %d", minDiskGiB, maxDiskGiB)
 		}
 
 		nodePool.Name = *name
 		nodePool.Cluster.Identifier = *cluster
 		nodePool.CPUs = *cpus
-		nodePool.Memory = *memory * (1 << 30)
-		nodePool.DiskSize = *disk * (1 << 30)
-		nodePool.OperatingSystem = kubernetesv1.OperatingSystem(*operatingSystem)
+		nodePool.Memory = *memory * gibibyte
+		nodePool.DiskSize = *disk * gibibyte
 		if flags.Changed("replicas") {
 			nodePool.Replicas = pointer.Int(*replicas)
 		}
 		return nil
 	}
-}
-
-// gibibytes renders a byte value using the CLI's GiB display unit.
-func gibibytes(bytes int) string {
-	return strconv.Itoa(bytes/(1<<30)) + "Gi"
 }

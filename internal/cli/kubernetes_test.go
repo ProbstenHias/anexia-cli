@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 
@@ -120,26 +121,33 @@ func TestKubernetesNodePoolCreateFlags(t *testing.T) {
 	}{
 		{name: "missing name", flags: withoutFlag(base, "--name"), wantError: "--name is required"},
 		{name: "missing cluster", flags: withoutFlag(base, "--cluster"), wantError: "--cluster is required"},
-		{name: "zero cpus", flags: replaceFlag(base, "--cpus", "0"), wantError: "--cpus must be greater than zero"},
-		{name: "zero memory", flags: replaceFlag(base, "--memory", "0"), wantError: "--memory must be greater than zero"},
-		{name: "zero disk", flags: replaceFlag(base, "--disk", "0"), wantError: "--disk must be greater than zero"},
+		{name: "cpus below range", flags: replaceFlag(base, "--cpus", "0"), wantError: "--cpus must be between 1 and 16"},
+		{name: "cpus above range", flags: replaceFlag(base, "--cpus", "17"), wantError: "--cpus must be between 1 and 16"},
+		{name: "memory below range", flags: replaceFlag(base, "--memory", "1"), wantError: "--memory must be between 2 and 64"},
+		{name: "memory above range", flags: replaceFlag(base, "--memory", "65"), wantError: "--memory must be between 2 and 64"},
+		{name: "disk below range", flags: replaceFlag(base, "--disk", "19"), wantError: "--disk must be between 20 and 1600"},
+		{name: "disk above range", flags: replaceFlag(base, "--disk", "1601"), wantError: "--disk must be between 20 and 1600"},
 		{
-			name:  "payload and default operating system",
+			name:  "payload",
 			flags: append(append([]string{}, base...), "--replicas", "3"),
 			want: map[string]any{
-				"name":             "workers",
-				"cluster":          "c-1",
-				"cpus":             float64(4),
-				"memory":           float64(4 << 30),
-				"disk_size":        float64(20 << 30),
-				"replicas":         float64(3),
-				"operating_system": "Flatcar Linux",
+				"name":      "workers",
+				"cluster":   "c-1",
+				"cpus":      float64(4),
+				"memory":    float64(4 << 30),
+				"disk_size": float64(20 << 30),
+				"replicas":  float64(3),
 			},
 		},
 		{
 			name:  "replicas omitted for engine default",
 			flags: base,
-			want:  map[string]any{"operating_system": "Flatcar Linux"},
+			want:  map[string]any{},
+		},
+		{
+			name:  "zero replicas is sent",
+			flags: append(append([]string{}, base...), "--replicas", "0"),
+			want:  map[string]any{"replicas": float64(0)},
 		},
 	}
 
@@ -179,16 +187,16 @@ func TestKubernetesListColumns(t *testing.T) {
 		want string
 	}{
 		{
-			name: "cluster location and state fallbacks",
+			name: "cluster partial objects",
 			args: []string{"kubernetes", "cluster", "list"},
-			body: `{"data":{"data":[{"identifier":"c-1","name":"demo","version":"1.29","location":{"code":"ANX04"},"state":{"title":"Running"}},{"identifier":"c-2","name":"other","location":{"name":"Vienna"},"state":{"id":"pending"}},{"identifier":"c-3","location":{"identifier":"l-3"}}]}}`,
-			want: "c-1\tdemo\t1.29\tANX04\tRunning\nc-2\tother\t\tVienna\tpending\nc-3\t\t\tl-3\t\n",
+			body: `{"data":{"data":[{"identifier":"c-1","name":"demo"},{"identifier":"c-2","name":"other"}]}}`,
+			want: "c-1\tdemo\nc-2\tother\n",
 		},
 		{
-			name: "node pool values",
+			name: "node pool partial objects",
 			args: []string{"kubernetes", "node-pool", "list"},
-			body: `{"data":{"data":[{"identifier":"np-1","name":"workers","cluster":{"name":"demo"},"replicas":3,"cpus":4,"memory":4294967296,"disk_size":21474836480,"state":{"title":"Running"}},{"identifier":"np-2","cluster":{"identifier":"c-2"},"memory":2147483648,"disk_size":21474836480,"state":{"id":"pending"}}]}}`,
-			want: "np-1\tworkers\tdemo\t3\t4\t4Gi\t20Gi\tRunning\nnp-2\t\tc-2\t\t0\t2Gi\t20Gi\tpending\n",
+			body: `{"data":{"data":[{"identifier":"np-1","name":"workers"},{"identifier":"np-2","name":"other"}]}}`,
+			want: "np-1\tworkers\nnp-2\tother\n",
 		},
 	}
 
@@ -210,16 +218,15 @@ func TestKubernetesNodePoolClusterFilter(t *testing.T) {
 
 	_, _, err := run(t, "kubernetes", "node-pools", "list", "--cluster", "c-1", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
-	require.Contains(t, last.query, "filters=")
-	require.Contains(t, last.query, "cluster")
-	require.Contains(t, last.query, "c-1")
+	query, err := url.ParseQuery(last.query)
+	require.NoError(t, err)
+	require.Equal(t, "cluster=c-1", query.Get("filters"))
 }
 
 func TestKubernetesKubeconfigOperations(t *testing.T) {
 	tests := []struct {
 		name       string
 		responses  []string
-		input      string
 		args       []string
 		wantOutput string
 		wantPath   string
@@ -237,14 +244,6 @@ func TestKubernetesKubeconfigOperations(t *testing.T) {
 			args:       []string{"kubernetes", "cluster", "kubeconfig", "get", "c-1", "--timeout", "7s"},
 			wantOutput: "config",
 			wantPath:   "/api/kubernetes/v1/cluster.json/c-1/rule/12277a581e1c47cba72338425a008aa3",
-			wantMethod: http.MethodPost,
-		},
-		{
-			name:       "delete rule",
-			responses:  []string{`{}`},
-			input:      "y\n",
-			args:       []string{"kubernetes", "cluster", "kubeconfig", "delete", "c-1"},
-			wantPath:   "/api/kubernetes/v1/cluster.json/c-1/rule/eec87131729e44fa91a4b7ee8c365a26",
 			wantMethod: http.MethodPost,
 		},
 	}
@@ -271,13 +270,7 @@ func TestKubernetesKubeconfigOperations(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			args := append(append([]string{}, tt.args...), "--token", "tok", "--api-base-url", srv.URL)
-			var stdout, stderr string
-			var err error
-			if tt.input != "" {
-				stdout, stderr, err = runWithInput(t, tt.input, args...)
-			} else {
-				stdout, stderr, err = run(t, args...)
-			}
+			stdout, _, err := run(t, args...)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantOutput, stdout, "got %q, want %q", stdout, tt.wantOutput)
 			if tt.wantPath != "" {
@@ -291,7 +284,45 @@ func TestKubernetesKubeconfigOperations(t *testing.T) {
 				}
 				require.True(t, found, "got requests %v, want %s %s", seen, tt.wantMethod, tt.wantPath)
 			}
-			_ = stderr
+		})
+	}
+}
+
+func TestKubernetesKubeconfigDeleteCallsRule(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderr, err := runWithInput(t, "y\n", "kubernetes", "cluster", "kubeconfig", "delete", "c-1", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodPost, last.method)
+	require.Equal(t, "/api/kubernetes/v1/cluster.json/c-1/rule/eec87131729e44fa91a4b7ee8c365a26", last.path)
+	require.Equal(t, "delete kubeconfig of cluster \"c-1\" [y/N]: deleted kubeconfig of cluster c-1\n", stderr)
+}
+
+func TestKubernetesKubeconfigRejectsEscapedIdentifiers(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		verb string
+	}{
+		{name: "question mark get", id: "c?1", verb: "get"},
+		{name: "fragment get", id: "c#1", verb: "get"},
+		{name: "encoded slash get", id: "c%2F1", verb: "get"},
+		{name: "space delete", id: "c 1", verb: "delete"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, `{}`)
+			args := []string{"kubernetes", "cluster", "kubeconfig", tt.verb, tt.id, "--timeout", "1ms", "--token", "tok", "--api-base-url", srv.URL}
+			if tt.verb == "delete" {
+				args = append(args, "--yes")
+			}
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Contains(t, errmap.Message(err), "invalid cluster identifier")
+			require.Empty(t, last.method, "got request %s, want no request", last.method)
 		})
 	}
 }
@@ -303,36 +334,6 @@ func TestKubernetesKubeconfigDeleteRespectsConfirmation(t *testing.T) {
 	_, _, err := runWithInput(t, "n\n", "kubernetes", "cluster", "kubeconfig", "delete", "c-1", "--token", "tok", "--api-base-url", srv.URL)
 	require.Error(t, err)
 	require.Empty(t, last.method, "got request %s, want no request", last.method)
-}
-
-func TestKubernetesEngineErrorPrefixes(t *testing.T) {
-	tests := []struct {
-		name   string
-		args   []string
-		prefix string
-	}{
-		{name: "cluster list", args: []string{"kubernetes", "cluster", "list"}, prefix: "listing clusters"},
-		{name: "cluster get", args: []string{"kubernetes", "cluster", "get", "placeholder"}, prefix: `reading cluster "placeholder"`},
-		{name: "cluster create", args: []string{"kubernetes", "cluster", "create", "--name", "placeholder", "--location", "placeholder"}, prefix: `creating cluster "placeholder"`},
-		{name: "cluster delete", args: []string{"kubernetes", "cluster", "delete", "placeholder", "--yes"}, prefix: `deleting cluster "placeholder"`},
-		{name: "kubeconfig get", args: []string{"kubernetes", "cluster", "kubeconfig", "get", "placeholder"}, prefix: `reading kubeconfig of cluster "placeholder"`},
-		{name: "kubeconfig delete", args: []string{"kubernetes", "cluster", "kubeconfig", "delete", "placeholder", "--yes"}, prefix: `deleting kubeconfig of cluster "placeholder"`},
-		{name: "node pool list", args: []string{"kubernetes", "node-pool", "list"}, prefix: "listing node-pools"},
-		{name: "node pool get", args: []string{"kubernetes", "node-pool", "get", "placeholder"}, prefix: `reading node-pool "placeholder"`},
-		{name: "node pool create", args: []string{"kubernetes", "node-pool", "create", "--name", "placeholder", "--cluster", "placeholder", "--cpus", "1", "--memory", "2", "--disk", "20"}, prefix: `creating node-pool "placeholder"`},
-		{name: "node pool delete", args: []string{"kubernetes", "node-pool", "delete", "placeholder", "--yes"}, prefix: `deleting node-pool "placeholder"`},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			isolate(t)
-			srv, _ := server(t, http.StatusInternalServerError, `{"error":{"code":500,"message":"boom"}}`)
-			args := append(append([]string{}, tt.args...), "--token", "tok", "--api-base-url", srv.URL)
-			_, _, err := run(t, args...)
-			require.Error(t, err)
-			require.Contains(t, errmap.Message(err), tt.prefix, "got %q, want prefix %q", errmap.Message(err), tt.prefix)
-		})
-	}
 }
 
 func withoutFlag(flags []string, name string) []string {

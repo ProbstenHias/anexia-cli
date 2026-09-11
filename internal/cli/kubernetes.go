@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -42,14 +43,6 @@ func newKubernetesClusterCommand(opts *globalOptions) *cobra.Command {
 		Columns: []resource.Column[kubernetesv1.Cluster]{
 			{Name: "identifier", Value: func(cluster *kubernetesv1.Cluster) string { return cluster.Identifier }},
 			{Name: "name", Value: func(cluster *kubernetesv1.Cluster) string { return cluster.Name }},
-			{Name: "version", Value: func(cluster *kubernetesv1.Cluster) string { return cluster.Version }},
-			{Name: "location", Value: clusterLocation},
-			{Name: "state", Value: func(cluster *kubernetesv1.Cluster) string {
-				if cluster.State.Text != "" {
-					return cluster.State.Text
-				}
-				return cluster.State.ID
-			}},
 		},
 	})
 	cmd.AddCommand(newKubernetesKubeconfigCommand(opts))
@@ -111,18 +104,6 @@ func clusterCreateFlags(flags *pflag.FlagSet) func(*kubernetesv1.Cluster) error 
 	}
 }
 
-// clusterLocation chooses the most useful location value returned by the
-// Engine, falling back to the identifier for sparse responses.
-func clusterLocation(cluster *kubernetesv1.Cluster) string {
-	if cluster.Location.Code != "" {
-		return cluster.Location.Code
-	}
-	if cluster.Location.Name != "" {
-		return cluster.Location.Name
-	}
-	return cluster.Location.Identifier
-}
-
 // newKubernetesKubeconfigCommand adds the document operations under a cluster.
 func newKubernetesKubeconfigCommand(opts *globalOptions) *cobra.Command {
 	return resource.Noun("kubeconfig", "kubeconfigs", "Manage the kubeconfig of a cluster",
@@ -141,10 +122,7 @@ func newKubernetesKubeconfigGetCommand(opts *globalOptions) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 	}
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := resource.ValidateIdentifier("cluster", args[0]); err != nil {
-			return err
-		}
-		if _, err := opts.Writer(cmd.OutOrStdout()); err != nil {
+		if err := validateKubeconfigCluster(args[0]); err != nil {
 			return err
 		}
 		apiClient, err := opts.API(cmd.Flags())
@@ -157,10 +135,24 @@ func newKubernetesKubeconfigGetCommand(opts *globalOptions) *cobra.Command {
 		if err != nil {
 			return opts.Fail(fmt.Errorf("reading kubeconfig of cluster %q: %w", args[0], err))
 		}
-		_, err = io.WriteString(cmd.OutOrStdout(), config)
-		return err
+		if _, err := io.WriteString(cmd.OutOrStdout(), config); err != nil {
+			return fmt.Errorf("writing kubeconfig: %w", err)
+		}
+		return nil
 	}
 	return cmd
+}
+
+// validateKubeconfigCluster is stricter than ValidateIdentifier because
+// go-anxcloud interpolates the cluster ID into the kubeconfig rule URL.
+func validateKubeconfigCluster(id string) error {
+	if err := resource.ValidateIdentifier("cluster", id); err != nil {
+		return err
+	}
+	if url.PathEscape(id) != id {
+		return errmap.Usagef("invalid cluster identifier %q", id)
+	}
+	return nil
 }
 
 // newKubernetesKubeconfigDeleteCommand confirms before firing the remove rule.
@@ -172,7 +164,7 @@ func newKubernetesKubeconfigDeleteCommand(opts *globalOptions) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 	}
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := resource.ValidateIdentifier("cluster", args[0]); err != nil {
+		if err := validateKubeconfigCluster(args[0]); err != nil {
 			return err
 		}
 		question := fmt.Sprintf("delete kubeconfig of cluster %q", args[0])
@@ -188,8 +180,10 @@ func newKubernetesKubeconfigDeleteCommand(opts *globalOptions) *cobra.Command {
 		if err := kubernetesv1.RemoveKubeConfig(ctx, apiClient, args[0]); err != nil {
 			return opts.Fail(fmt.Errorf("deleting kubeconfig of cluster %q: %w", args[0], err))
 		}
-		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "deleted kubeconfig of cluster %s\n", args[0])
-		return err
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "deleted kubeconfig of cluster %s\n", args[0]); err != nil {
+			return fmt.Errorf("writing status: %w", err)
+		}
+		return nil
 	}
 	return cmd
 }

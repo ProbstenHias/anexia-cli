@@ -211,8 +211,8 @@ when the library says which, but a `-` is never evidence about the Engine on its
 The `core`, `network`, `dns` and `kubernetes` groups below are implemented. Within `network`, `vlan` has every
 verb because go-anxcloud models it generically; `prefix` has every verb hand-written against the
 older client, and `address` is read only for now because its write verbs are still to be declared.
-Everything after those four groups is a roadmap of what the library can reach, read off
-go-anxcloud v0.14.5 and not verified against the Engine.
+The remaining groups, starting with `vsphere`, are roadmap items read off go-anxcloud v0.14.5 and
+not verified against the Engine.
 
 ### core
 
