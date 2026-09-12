@@ -47,8 +47,8 @@ verb.
 | `list` | none | `List` | Paged. Always available if the Engine can enumerate the resource. |
 | `get` | `<id>` | `Get` | One object by identifier. |
 | `create` | none, flags carry the payload | `Create` | |
-| `update` | `<id>`, flags carry the changes | Read then `Update` | The read is `Get`, or `List` where the Engine has no single-object read (`dns record`). `network prefix` sends a sparse `Update` without the read, see below. |
-| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. The legacy clients (`core tag`, `network prefix`) call it `Delete`. |
+| `update` | `<id>`, flags carry the changes | Read then `Update` | The read is `Get`, or `List` where the Engine has no single-object read (`dns record`). `network prefix` sends a sparse `Update` without the read; `network address` reads only to retain rDNS, see below. |
+| `delete` | `<id>` | `Destroy` | Confirms first. Aliased to `destroy`, which is never a command name. The legacy clients (`core tag`, `network prefix`, `network address`) call it `Delete`. |
 
 A resource only gets the verbs the Engine actually supports. `core location` is read-only in the
 Engine, so it exposes `list` and `get` and nothing else. This is deliberate: a `create` that
@@ -64,8 +64,8 @@ A resource that is only reachable inside another, such as a DNS record inside it
 `Scope` hook. Scope flags are required, and unlike list filters they apply to every verb, because
 without one there is no collection to address at all.
 
-Some resources the CLI already reaches are writable in the Engine and do not offer the verbs yet,
-`network address` among them. `network prefix` shows how they get declared: hand-written against
+Some resources the CLI will reach are writable in the Engine before the CLI offers the verbs.
+`network prefix` and `network address` show how they get declared: hand-written against
 the legacy client, but with the same verbs, flags-as-payload, confirmation and error shape as the
 registry, so a user cannot tell which half of the CLI served the command.
 
@@ -84,7 +84,11 @@ create a tag object, and `anexia core resource tag add` does not.
 
 Four operations have no honest CRUD spelling and are allowed as leaf
 verbs: `network address reserve`, `dns zone import`, `dns zone apply`, and
-`storage bucket empty-and-delete`. The two DNS ones ship; the others are planned.
+`storage bucket empty-and-delete`. The DNS operations and `network address reserve` ship;
+`storage bucket empty-and-delete` is planned.
+`network address reserve` takes `--reservation-period` as a duration, sends it to the Engine as
+whole seconds, and requires at least 1s when passed. Without it, the Engine applies its 30m default.
+An address reservation that returns no addresses is an error, not an empty table.
 `import` and `apply` take a document via `--file` rather than payload flags,
 because the Engine accepts a BIND zone file and a JSON changeset respectively,
 and spelling either out as repeated flags would mean inventing a small language
@@ -149,6 +153,9 @@ is not past anything, so it stays a plain not-found and exits 4.
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
 
+`network address create` calls the Engine's `name` field `--address`, because the value is an IP
+address and `--name` would read as a label. `list` and `get` still show it in the NAME column.
+
 Filter flags on `list` are named after the field they filter, in the singular: `--tag`, `--name`,
 `--location`, `--status`, `--service`. Not after the Engine's query parameter, which is why
 `core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
@@ -167,8 +174,9 @@ that accepts sorting.
 
 Write verbs on resources that report a provisioning state will get `--wait` and `--wait-timeout`.
 Resources without a state must not get the flags at all, so `--wait` is never accepted only to
-fail later. `network vlan` (`Pending`, `Active`, `Marked for deletion`) and `network prefix` (`status`)
-are the implemented resources that report one; their `--wait` is still to come.
+fail later. `network vlan` (`Pending`, `Active`, `Marked for deletion`), `network prefix` (`status`)
+and `network address` (`status`) are the implemented resources that report one; their `--wait` is
+still to come.
 
 An `update` that names no field is refused before the write. The Engine would accept it, and on a
 resource that versions its contents that means a revision nobody asked for, reported as success.
@@ -185,6 +193,12 @@ read: the legacy client's update body is sparse, every field `omitempty`, so it 
 field and the Engine keeps the rest. It offers `--description` only: the legacy update also carries
 `name`, but a prefix's name is its CIDR, assigned by the Engine, so it is not offered for the same
 reason `dns zone update` has no `--name`. `--description ""` is refused for the same reason `vlan` does.
+
+`network address update` reads the address only to retain `rdns_name`, the one field in
+go-anxcloud's `address.Update` without `omitempty`. `description_customer` and `role` are sparse,
+so `--description ""` and `--role ""` are refused with the same "cannot be emptied" wording as
+prefix; `--rdns ""` reaches the Engine and clears the reverse DNS name. The legacy update also
+carries `name`, but an address's name is the IP itself, so it is not offered, as with prefix.
 
 A field the Engine cannot change safely does not get a flag. `dns zone update` has no `--name`,
 because the Engine's zone update carries the name only in the request body with no old name
@@ -218,9 +232,10 @@ Four formats, one flag.
 
 `table` is the default and is meant for humans: aligned columns, uppercase headers, no borders.
 Column sets are short on purpose, up to five fields, because a table wider than a terminal is
-useless. Fewer when the Engine returns less: a prefix write is answered with the list summary,
-so `network prefix create` and `update` show its three fields, and the full object is a
-`network prefix get <id> -o json` away. Everywhere else the full object is one `-o json` away.
+useless. Fewer when the Engine returns less: prefix and address writes are answered with their list
+summaries, so `network prefix create`, `network address create` and their `update` verbs show the
+list columns only, and the full object is a `get <id> -o json` away. Everywhere else the full
+object is one `-o json` away.
 
 `tsv` is `table` without the alignment: raw values, lowercase headers, tab-separated. This is the
 one to pipe into `cut` and `awk`.

@@ -51,16 +51,13 @@ func TestNetworkWithoutSubcommandPrintsHelp(t *testing.T) {
 	require.Contains(t, stdout, "address")
 }
 
-func TestNetworkAddressOnlyHasReadVerbs(t *testing.T) {
+func TestNetworkAddressHasEveryVerb(t *testing.T) {
 	isolate(t)
 
 	stdout, _, err := run(t, "network", "address")
 	require.NoError(t, err)
-	require.Contains(t, stdout, "list")
-	require.Contains(t, stdout, "get")
-	for _, absent := range []string{"create", "update", "delete", "destroy", "reserve"} {
-		require.NotContains(t, stdout, absent,
-			"address write verbs are still to be declared")
+	for _, verb := range []string{"list", "get", "create", "update", "delete", "reserve"} {
+		require.Contains(t, stdout, verb)
 	}
 }
 
@@ -1230,6 +1227,523 @@ func TestNetworkAddressesPluralAlias(t *testing.T) {
 	stdout, _, err := run(t, "network", "addresses", "list", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
 	require.Contains(t, stdout, "10.0.0.1")
+}
+
+const (
+	oneAddress     = `{"identifier":"a-1","name":"10.0.0.1","role_text":"Default","description_customer":"gateway","rdns_name":"old.example.com"}`
+	createdAddress = `{"identifier":"a-1","name":"10.0.0.9","role_text":"Default","description_customer":"gateway","rdns_name":"host.example.com"}`
+)
+
+// TestNetworkAddressCreateSendsTheLegacyCreateBody pins the address creation payload and Engine response rendering.
+func TestNetworkAddressCreateSendsTheLegacyCreateBody(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, createdAddress)
+
+	stdout, _, err := run(t, "network", "address", "create",
+		"--prefix", "p-1", "--address", "10.0.0.1", "--description", "gateway",
+		"--organization", "o-1", "--rdns", "host.example.com",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodPost, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address.json", sent[0].path)
+	require.Empty(t, sent[0].query)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{
+		"prefix":               "p-1",
+		"name":                 "10.0.0.1",
+		"description_customer": "gateway",
+		"role":                 "Default",
+		"organization":         "o-1",
+		"rdns_name":            "host.example.com",
+	}, body)
+	require.Equal(t,
+		"IDENTIFIER   NAME       ROLE      DESCRIPTION\n"+
+			"a-1          10.0.0.9   Default   gateway\n",
+		stdout)
+}
+
+// TestNetworkAddressCreateCarriesTheSelectedAndDefaultFields pins create payload values without omitempty.
+func TestNetworkAddressCreateCarriesTheSelectedAndDefaultFields(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want map[string]any
+	}{
+		{
+			name: "selected role",
+			args: []string{"--prefix", "p-1", "--address", "10.0.0.1", "--role", "Reserved"},
+			want: map[string]any{
+				"prefix": "p-1", "name": "10.0.0.1", "description_customer": "", "role": "Reserved", "organization": "", "rdns_name": "",
+			},
+		},
+		{
+			name: "defaults",
+			args: []string{"--prefix", "p-1", "--address", "10.0.0.1"},
+			want: map[string]any{
+				"prefix": "p-1", "name": "10.0.0.1", "description_customer": "", "role": "Default", "organization": "", "rdns_name": "",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, createdAddress)
+
+			args := append([]string{"network", "address", "create"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Len(t, sent, 1)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+			require.Equal(t, tt.want, body)
+		})
+	}
+}
+
+// TestNetworkAddressCreateRejectsBadFlags pins that invalid create input never reaches the Engine.
+func TestNetworkAddressCreateRejectsBadFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing prefix", args: []string{"--address", "10.0.0.1"}, want: "--prefix is required"},
+		{name: "missing address", args: []string{"--prefix", "p-1"}, want: "--address is required"},
+		{name: "invalid prefix", args: []string{"--prefix", "p/1", "--address", "10.0.0.1"}, want: `prefix "p/1" does not name a prefix`},
+		{name: "invalid organization", args: []string{"--prefix", "p-1", "--address", "10.0.0.1", "--organization", "o/1"}, want: `organization "o/1" does not name a organization`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress)
+
+			args := append([]string{"network", "address", "create"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
+}
+
+// TestNetworkAddressUpdateKeepsRDNSAndRendersTheWrite pins rDNS preservation and rendering the PUT response.
+func TestNetworkAddressUpdateKeepsRDNSAndRendersTheWrite(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	updated := strings.Replace(oneAddress, `"gateway"`, `"lab"`, 1)
+	srv := recordingServer(t, &sent, oneAddress, updated)
+
+	stdout, _, err := run(t, "network", "address", "update", "a-1", "--description", "lab", "-o", "json",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 2)
+	require.Equal(t, http.MethodGet, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address.json/a-1", sent[0].path)
+	require.Empty(t, sent[0].query)
+	require.Equal(t, http.MethodPut, sent[1].method)
+	require.Equal(t, "/api/ipam/v1/address.json/a-1", sent[1].path)
+	require.Empty(t, sent[1].query)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+	require.Equal(t, map[string]any{
+		"description_customer": "lab",
+		"rdns_name":            "old.example.com",
+	}, body)
+
+	// The PUT answer is rendered whole: every summary field, including the
+	// ones the table drops (rdns_name, role_text), must survive into -o json.
+	require.JSONEq(t, updated, stdout)
+}
+
+// TestNetworkAddressUpdateHandlesRDNSAndRoleChanges pins sparse updates and explicit rDNS overrides.
+func TestNetworkAddressUpdateHandlesRDNSAndRoleChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want map[string]any
+	}{
+		{name: "clears rdns", args: []string{"--rdns", ""}, want: map[string]any{"rdns_name": ""}},
+		{name: "changes role", args: []string{"--role", "Reserved"}, want: map[string]any{"role": "Reserved", "rdns_name": "old.example.com"}},
+		{name: "overrides rdns", args: []string{"--rdns", "new.example.com"}, want: map[string]any{"rdns_name": "new.example.com"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress, oneAddress)
+
+			args := append([]string{"network", "address", "update", "a-1"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Len(t, sent, 2)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+			require.Equal(t, tt.want, body)
+		})
+	}
+}
+
+// TestNetworkAddressUpdateReportsAFailedWrite pins that a failed PUT is named as an update.
+func TestNetworkAddressUpdateReportsAFailedWrite(t *testing.T) {
+	isolate(t)
+
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":500}}`))
+
+			return
+		}
+		_, _ = w.Write([]byte(oneAddress))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, _, err := run(t, "network", "address", "update", "a-1", "--description", "lab",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, []string{http.MethodGet, http.MethodPut}, methods)
+	require.Contains(t, errmap.Message(err), `updating address "a-1"`)
+}
+
+// TestNetworkAddressUpdateStopsWhenTheReadFails pins rDNS preservation by refusing to write after a failed read.
+func TestNetworkAddressUpdateStopsWhenTheReadFails(t *testing.T) {
+	isolate(t)
+
+	srv, last := server(t, http.StatusNotFound, `{"error":{"code":404}}`)
+
+	_, _, err := run(t, "network", "address", "update", "a-1", "--description", "lab",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, http.MethodGet, last.method, "a PUT afterwards would overwrite the recorded GET")
+	require.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), `reading address "a-1"`)
+}
+
+// TestNetworkAddressUpdateRejectsInvalidChanges pins refused sparse update values before a read or write.
+func TestNetworkAddressUpdateRejectsInvalidChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "nothing changed", want: "nothing to update"},
+		{name: "empty description", args: []string{"--description", ""}, want: "--description cannot be emptied"},
+		{name: "empty role", args: []string{"--role", ""}, want: "--role cannot be emptied"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress)
+
+			args := append([]string{"network", "address", "update", "a-1"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
+}
+
+// TestNetworkAddressUpdateOffersTheWritableFields pins the complete update flag surface.
+func TestNetworkAddressUpdateOffersTheWritableFields(t *testing.T) {
+	isolate(t)
+
+	stdout, _, err := run(t, "network", "address", "update", "--help")
+	require.NoError(t, err)
+
+	_, after, found := strings.Cut(stdout, "Flags:\n")
+	require.True(t, found)
+	local, _, _ := strings.Cut(after, "Global Flags:")
+	var names []string
+	for _, m := range regexp.MustCompile(`(?m)^\s+(?:-\w, )?--([\w-]+)`).FindAllStringSubmatch(local, -1) {
+		names = append(names, m[1])
+	}
+	require.Equal(t, []string{"description", "help", "rdns", "role"}, names)
+}
+
+// TestNetworkAddressWriteVerbsGuardTheIdentifier pins URL path safety for address writes.
+func TestNetworkAddressWriteVerbsGuardTheIdentifier(t *testing.T) {
+	verbs := []struct {
+		name     string
+		args     func(string) []string
+		method   string
+		requests int
+	}{
+		{name: "update", args: func(id string) []string { return []string{"network", "address", "update", id, "--description", "lab"} }, method: http.MethodPut, requests: 2},
+		{name: "delete", args: func(id string) []string { return []string{"network", "address", "delete", id, "--yes"} }, method: http.MethodDelete, requests: 1},
+	}
+	badIDs := map[string]string{
+		"a slash": "a/1", "nothing": "", "whitespace": "  ", "a dot": ".", "two dots": "..", "padded dots": " .. ",
+	}
+
+	for _, verb := range verbs {
+		for label, id := range badIDs {
+			t.Run(verb.name+" refuses "+label, func(t *testing.T) {
+				isolate(t)
+				var sent []request
+				srv := recordingServer(t, &sent, oneAddress)
+
+				args := append(verb.args(id), "--token", "tok", "--api-base-url", srv)
+				_, _, err := run(t, args...)
+				require.Error(t, err)
+				require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+				require.Contains(t, errmap.Message(err), fmt.Sprintf("address %q does not name a address", id))
+				require.Empty(t, sent)
+			})
+		}
+
+		t.Run(verb.name+" escapes the identifier", func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress)
+
+			args := append(verb.args("a 1?x=y"), "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.NoError(t, err)
+			require.Len(t, sent, verb.requests)
+			require.Equal(t, verb.method, sent[len(sent)-1].method)
+			for _, req := range sent {
+				require.Equal(t, "/api/ipam/v1/address.json/a 1?x=y", req.path)
+				require.Empty(t, req.query)
+			}
+		})
+	}
+}
+
+// TestNetworkAddressDeleteConfirms pins the confirmation prompt and deletion note.
+func TestNetworkAddressDeleteConfirms(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
+
+	stdout, stderr, err := runWithInput(t, "y\n", "network", "address", "delete", "a-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Empty(t, stdout)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodDelete, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address.json/a-1", sent[0].path)
+	require.Empty(t, sent[0].body)
+	require.Contains(t, stderr, `delete address "a-1"`)
+	require.Contains(t, stderr, "deleted address a-1")
+}
+
+// TestNetworkAddressDeleteStopsOnARefusal pins that a declined confirmation makes no request.
+func TestNetworkAddressDeleteStopsOnARefusal(t *testing.T) {
+	isolate(t)
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
+
+	_, _, err := runWithInput(t, "n\n", "network", "address", "delete", "a-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitCanceled, errmap.ExitCode(err))
+	require.Empty(t, sent)
+}
+
+// TestNetworkAddressDeleteWithYesSkipsThePrompt pins the destroy alias and noninteractive delete.
+func TestNetworkAddressDeleteWithYesSkipsThePrompt(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `{}`)
+
+	_, stderr, err := run(t, "network", "address", "destroy", "a-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, last.method)
+	require.NotContains(t, stderr, "[y/N]")
+	require.Contains(t, stderr, "deleted address a-1")
+}
+
+// TestNetworkAddressDeleteReportsTheFailure pins the action wording and not-found exit code.
+func TestNetworkAddressDeleteReportsTheFailure(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusNotFound, `{"error":{"code":404}}`)
+
+	_, _, err := run(t, "network", "address", "delete", "a-1", "--yes",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), `deleting address "a-1"`)
+}
+
+// TestNetworkAddressReserveSendsThePayloadAndRendersTheData pins an explicit
+// reservation body and list rendering. ReserveRandom sleeps up to one second
+// before each request, so reserve tests are slow by design.
+func TestNetworkAddressReserveSendsThePayloadAndRendersTheData(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{"limit":1,"page":1,"total_items":1,"total_pages":1,"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+	stdout, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+		"--count", "2", "--prefix", "p-1", "--version", "6", "--reservation-period", "30m",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodPost, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address/reserve/ip/count.json", sent[0].path)
+	require.Empty(t, sent[0].query)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{
+		"location_identifier": "l-1",
+		"vlan_identifier":     "v-1",
+		"count":               float64(2),
+		"prefix_identifier":   "p-1",
+		"ip_version":          float64(6),
+		"reservation_period":  float64(1800),
+	}, body)
+	require.Equal(t,
+		"IDENTIFIER   ADDRESS    PREFIX\n"+
+			"a-9          10.0.0.9   10.0.0.0/24\n",
+		stdout)
+}
+
+// TestNetworkAddressReserveSendsOnlyTheRequiredFieldsByDefault pins the Engine default reservation payload.
+func TestNetworkAddressReserveSendsOnlyTheRequiredFieldsByDefault(t *testing.T) {
+	isolate(t)
+	var sent []request
+	srv := recordingServer(t, &sent, `{"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+	_, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{
+		"location_identifier": "l-1",
+		"vlan_identifier":     "v-1",
+		"count":               float64(1),
+	}, body)
+}
+
+// TestNetworkAddressReserveTruncatesAcceptedPeriods pins the one-second
+// boundary and the whole-seconds payload conversion.
+func TestNetworkAddressReserveTruncatesAcceptedPeriods(t *testing.T) {
+	tests := []struct {
+		period string
+		want   float64
+	}{
+		{period: "1s", want: 1},
+		{period: "1500ms", want: 1},
+		{period: "1h", want: 3600},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.period, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, `{"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+			_, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+				"--reservation-period", tt.period, "--token", "tok", "--api-base-url", srv)
+			require.NoError(t, err)
+			require.Len(t, sent, 1)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+			require.Equal(t, tt.want, body["reservation_period"])
+		})
+	}
+}
+
+// TestNetworkAddressReserveKeepsTheSummaryInJSON pins structured output of the full reservation summary.
+func TestNetworkAddressReserveKeepsTheSummaryInJSON(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK, `{"total_items":1,"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+	stdout, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1", "-o", "json",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	var summary struct {
+		TotalItems int `json:"total_items"`
+		Data       []struct {
+			ID string `json:"identifier"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &summary))
+	require.Equal(t, 1, summary.TotalItems)
+	require.Len(t, summary.Data, 1)
+	require.Equal(t, "a-9", summary.Data[0].ID)
+}
+
+// TestNetworkAddressReserveRejectsAnEmptyEngineResponse pins that an accepted reservation always contains addresses.
+func TestNetworkAddressReserveRejectsAnEmptyEngineResponse(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK, `{"data":[]}`)
+
+	stdout, stderr, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitError, errmap.ExitCode(err))
+	require.Empty(t, stdout)
+	require.Empty(t, stderr)
+	require.Contains(t, errmap.Message(err), "reserving addresses: the Engine returned no addresses")
+}
+
+// TestNetworkAddressReserveRejectsBadFlags pins reserve validation before the Engine is contacted.
+func TestNetworkAddressReserveRejectsBadFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing location", args: []string{"--vlan", "v-1"}, want: "--location is required"},
+		{name: "missing vlan", args: []string{"--location", "l-1"}, want: "--vlan is required"},
+		{name: "zero count", args: []string{"--location", "l-1", "--vlan", "v-1", "--count", "0"}, want: "--count must be at least 1"},
+		{name: "invalid version", args: []string{"--location", "l-1", "--vlan", "v-1", "--version", "5"}, want: "--version 5 must be 4 or 6"},
+		{name: "zero version", args: []string{"--location", "l-1", "--vlan", "v-1", "--version", "0"}, want: "--version 0 must be 4 or 6"},
+		{name: "invalid location", args: []string{"--location", "l/1", "--vlan", "v-1"}, want: `location "l/1" does not name a location`},
+		{name: "invalid vlan", args: []string{"--location", "l-1", "--vlan", "v/1"}, want: `vlan "v/1" does not name a vlan`},
+		{name: "invalid prefix", args: []string{"--location", "l-1", "--vlan", "v-1", "--prefix", "p/1"}, want: `prefix "p/1" does not name a prefix`},
+		{name: "sub-second reservation period", args: []string{"--location", "l-1", "--vlan", "v-1", "--reservation-period", "500ms"}, want: "--reservation-period must be at least 1s"},
+		{name: "negative reservation period", args: []string{"--location", "l-1", "--vlan", "v-1", "--reservation-period", "-1s"}, want: "--reservation-period must be at least 1s"},
+		{name: "zero reservation period", args: []string{"--location", "l-1", "--vlan", "v-1", "--reservation-period", "0s"}, want: "--reservation-period must be at least 1s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, `{}`)
+
+			args := append([]string{"network", "address", "reserve"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
 }
 
 // TestNetworkListAllCarriesFiltersAcrossPages pins that the parameters that

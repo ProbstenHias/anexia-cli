@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"go.anx.io/go-anxcloud/pkg/ipam/address"
 	"go.anx.io/go-anxcloud/pkg/utils/param"
 
+	"github.com/ProbstenHias/anexia-cli/internal/confirm"
 	"github.com/ProbstenHias/anexia-cli/internal/errmap"
+	"github.com/ProbstenHias/anexia-cli/internal/output"
 	"github.com/ProbstenHias/anexia-cli/internal/resource"
 )
 
@@ -17,14 +21,34 @@ import (
 // in go-anxcloud's generic pkg/apis tree, so these commands drive the legacy
 // ipam/address client directly, sharing the paging and rendering helpers.
 //
-// The library implements create, update, delete and ReserveRandom here as
-// well. They are left for the change that gives the resource registry its
-// write verbs, so the two halves of the CLI keep offering the same verbs.
+// The write verbs drive the same legacy client, using its Create, Update, and
+// ReserveRandom types as the Engine payload contract.
 func newNetworkAddressCommand(opts *globalOptions) *cobra.Command {
 	return resource.Noun("address", "addresses", "Work with Anexia IP addresses",
 		newNetworkAddressListCommand(opts),
 		newNetworkAddressGetCommand(opts),
+		newNetworkAddressCreateCommand(opts),
+		newNetworkAddressUpdateCommand(opts),
+		newNetworkAddressDeleteCommand(opts),
+		newNetworkAddressReserveCommand(opts),
 	)
+}
+
+// addressColumns is the projection list, create and update share: the Engine
+// answers both writes with the list summary rather than the full object.
+var addressColumns = []string{"identifier", "name", "role", "description"}
+
+func addressRow(s *address.Summary) []string {
+	return []string{s.ID, s.Name, s.Role, s.DescriptionCustomer}
+}
+
+// renderAddressSummary prints a write's summary answer as a table or object.
+func renderAddressSummary(w *output.Writer, s *address.Summary) error {
+	if w.Format().Structured() {
+		return w.Object(s)
+	}
+
+	return w.Table(addressColumns, [][]string{addressRow(s)})
 }
 
 // addressFilters registers the fields the Engine's filtered address endpoint
@@ -163,12 +187,7 @@ func newNetworkAddressListCommand(opts *globalOptions) *cobra.Command {
 			return opts.Fail(fmt.Errorf("listing addresses: %w", err))
 		}
 
-		return resource.RenderList(cmd, w, "addresses", found,
-			[]string{"identifier", "name", "role", "description"},
-			func(s *address.Summary) []string {
-				return []string{s.ID, s.Name, s.Role, s.DescriptionCustomer}
-			},
-		)
+		return resource.RenderList(cmd, w, "addresses", found, addressColumns, addressRow)
 	}
 
 	return cmd
@@ -220,4 +239,322 @@ func newNetworkAddressGetCommand(opts *globalOptions) *cobra.Command {
 			)
 		},
 	}
+}
+
+// addressCreateFlags holds the create payload before it becomes an address.Create.
+type addressCreateFlags struct {
+	prefix       string
+	address      string
+	description  string
+	role         string
+	organization string
+	rdns         string
+}
+
+func (f *addressCreateFlags) register(flags *pflag.FlagSet) {
+	flags.StringVar(&f.prefix, "prefix", "", "prefix identifier the address belongs to")
+	flags.StringVar(&f.address, "address", "", "IP address to create")
+	flags.StringVar(&f.description, "description", "", "customer description")
+	flags.StringVar(&f.role, "role", "Default", "address role")
+	flags.StringVar(&f.organization, "organization", "", "organization identifier the address belongs to")
+	flags.StringVar(&f.rdns, "rdns", "", "reverse DNS name")
+}
+
+func (f *addressCreateFlags) payload() (address.Create, error) {
+	if f.prefix == "" {
+		return address.Create{}, errmap.Usagef("--prefix is required")
+	}
+
+	if err := resource.ValidateIdentifier("prefix", f.prefix); err != nil {
+		return address.Create{}, err
+	}
+
+	if f.address == "" {
+		return address.Create{}, errmap.Usagef("--address is required")
+	}
+
+	if f.organization != "" {
+		if err := resource.ValidateIdentifier("organization", f.organization); err != nil {
+			return address.Create{}, err
+		}
+	}
+
+	return address.Create{
+		PrefixID:            f.prefix,
+		Address:             f.address,
+		DescriptionCustomer: f.description,
+		Role:                f.role,
+		Organization:        f.organization,
+		RDNSName:            f.rdns,
+	}, nil
+}
+
+func newNetworkAddressCreateCommand(opts *globalOptions) *cobra.Command {
+	var f addressCreateFlags
+
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create an address",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			body, err := f.payload()
+			if err != nil {
+				return err
+			}
+
+			w, err := opts.Writer(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			c, err := opts.Client(cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := opts.Context(cmd.Context())
+			defer cancel()
+
+			created, err := address.NewAPI(c).Create(ctx, body)
+			if err != nil {
+				return opts.Fail(fmt.Errorf("creating address: %w", err))
+			}
+
+			return renderAddressSummary(w, &created)
+		},
+	}
+
+	f.register(cmd.Flags())
+
+	return cmd
+}
+
+// newNetworkAddressUpdateCommand reads the address first only to carry
+// rdns_name, the one address.Update field without omitempty, so an unset
+// --rdns does not wipe reverse DNS. Description and role are sparse fields, so
+// emptying them is refused while --rdns "" clears the reverse DNS name. The
+// update body also carries name, but an address's name is the IP itself, so no
+// flag is offered for it.
+func newNetworkAddressUpdateCommand(opts *globalOptions) *cobra.Command {
+	var description, role, rdns string
+
+	cmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Update an address",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("address", args[0]); err != nil {
+				return err
+			}
+
+			flags := cmd.Flags()
+			if !flags.Changed("description") && !flags.Changed("role") && !flags.Changed("rdns") {
+				return errmap.Usagef("nothing to update: pass at least one field to change")
+			}
+
+			if flags.Changed("description") && description == "" {
+				return errmap.Usagef("--description cannot be emptied: go-anxcloud drops an empty description from the request")
+			}
+
+			if flags.Changed("role") && role == "" {
+				return errmap.Usagef("--role cannot be emptied: go-anxcloud drops an empty role from the request")
+			}
+
+			w, err := opts.Writer(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			c, err := opts.Client(flags)
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := opts.Context(cmd.Context())
+			defer cancel()
+
+			a := address.NewAPI(c)
+			current, err := a.Get(ctx, pathValue(args[0]))
+			if err != nil {
+				return opts.Fail(fmt.Errorf("reading address %q: %w", args[0], err))
+			}
+
+			body := address.Update{RDNSName: current.RDNSName}
+			if flags.Changed("description") {
+				body.DescriptionCustomer = description
+			}
+			if flags.Changed("role") {
+				body.Role = role
+			}
+			if flags.Changed("rdns") {
+				body.RDNSName = rdns
+			}
+
+			updated, err := a.Update(ctx, pathValue(args[0]), body)
+			if err != nil {
+				return opts.Fail(fmt.Errorf("updating address %q: %w", args[0], err))
+			}
+
+			return renderAddressSummary(w, &updated)
+		},
+	}
+
+	cmd.Flags().StringVar(&description, "description", "", "customer description")
+	cmd.Flags().StringVar(&role, "role", "", "address role")
+	cmd.Flags().StringVar(&rdns, "rdns", "", "reverse DNS name, empty clears it")
+
+	return cmd
+}
+
+func newNetworkAddressDeleteCommand(opts *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:     "delete <id>",
+		Aliases: []string{"destroy"},
+		Short:   "Delete an address",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("address", args[0]); err != nil {
+				return err
+			}
+
+			if err := confirm.Prompt(cmd.InOrStdin(), cmd.ErrOrStderr(), fmt.Sprintf("delete address %q", args[0]), opts.AssumeYes()); err != nil {
+				return err
+			}
+
+			c, err := opts.Client(cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := opts.Context(cmd.Context())
+			defer cancel()
+
+			if err := address.NewAPI(c).Delete(ctx, pathValue(args[0])); err != nil {
+				return opts.Fail(fmt.Errorf("deleting address %q: %w", args[0], err))
+			}
+
+			_, err = fmt.Fprintf(cmd.ErrOrStderr(), "deleted address %s\n", args[0])
+
+			return err
+		},
+	}
+}
+
+type addressReserveFlags struct {
+	location          string
+	vlan              string
+	count             int
+	prefix            string
+	version           int
+	reservationPeriod time.Duration
+}
+
+func (f *addressReserveFlags) register(flags *pflag.FlagSet) {
+	flags.StringVar(&f.location, "location", "", "location identifier to reserve addresses in")
+	flags.StringVar(&f.vlan, "vlan", "", "VLAN identifier to reserve addresses in")
+	flags.IntVar(&f.count, "count", 1, "number of addresses to reserve")
+	flags.StringVar(&f.prefix, "prefix", "", "prefix identifier to reserve addresses from")
+	flags.IntVar(&f.version, "version", 0, "IP version to reserve, 4 or 6")
+	flags.DurationVar(&f.reservationPeriod, "reservation-period", 0, "how long to reserve the addresses (the Engine defaults to 30m)")
+}
+
+func (f *addressReserveFlags) payload(flags *pflag.FlagSet) (address.ReserveRandom, error) {
+	if f.location == "" {
+		return address.ReserveRandom{}, errmap.Usagef("--location is required")
+	}
+
+	if err := resource.ValidateIdentifier("location", f.location); err != nil {
+		return address.ReserveRandom{}, err
+	}
+
+	if f.vlan == "" {
+		return address.ReserveRandom{}, errmap.Usagef("--vlan is required")
+	}
+
+	if err := resource.ValidateIdentifier("vlan", f.vlan); err != nil {
+		return address.ReserveRandom{}, err
+	}
+
+	if f.count < 1 {
+		return address.ReserveRandom{}, errmap.Usagef("--count must be at least 1")
+	}
+
+	if flags.Changed("version") && f.version != 4 && f.version != 6 {
+		return address.ReserveRandom{}, errmap.Usagef("--version %d must be 4 or 6", f.version)
+	}
+
+	if f.prefix != "" {
+		if err := resource.ValidateIdentifier("prefix", f.prefix); err != nil {
+			return address.ReserveRandom{}, err
+		}
+	}
+
+	if flags.Changed("reservation-period") && f.reservationPeriod < time.Second {
+		return address.ReserveRandom{}, errmap.Usagef("--reservation-period must be at least 1s")
+	}
+
+	seconds := f.reservationPeriod / time.Second
+	// #nosec G115 -- the value is 0 when unset and otherwise at least 1, so it is never negative.
+	period := uint(seconds)
+
+	return address.ReserveRandom{
+		LocationID:        f.location,
+		VlanID:            f.vlan,
+		Count:             f.count,
+		PrefixID:          f.prefix,
+		IPVersion:         address.IPReserveVersionLimit(f.version),
+		ReservationPeriod: period,
+	}, nil
+}
+
+func newNetworkAddressReserveCommand(opts *globalOptions) *cobra.Command {
+	var f addressReserveFlags
+
+	cmd := &cobra.Command{
+		Use:   "reserve",
+		Short: "Reserve random addresses",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			body, err := f.payload(cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			w, err := opts.Writer(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			c, err := opts.Client(cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := opts.Context(cmd.Context())
+			defer cancel()
+
+			reserved, err := address.NewAPI(c).ReserveRandom(ctx, body)
+			if err != nil {
+				return opts.Fail(fmt.Errorf("reserving addresses: %w", err))
+			}
+			if len(reserved.Data) == 0 {
+				return opts.Fail(errors.New("reserving addresses: the Engine returned no addresses"))
+			}
+
+			if w.Format().Structured() {
+				return w.Object(reserved)
+			}
+
+			return resource.RenderList(cmd, w, "reserved addresses", reserved.Data,
+				[]string{"identifier", "address", "prefix"},
+				func(ip *address.ReservedIP) []string {
+					return []string{ip.ID, ip.Address, ip.Prefix}
+				},
+			)
+		},
+	}
+
+	f.register(cmd.Flags())
+
+	return cmd
 }
