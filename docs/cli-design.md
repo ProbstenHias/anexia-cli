@@ -197,7 +197,8 @@ reason `dns zone update` has no `--name`. `--description ""` is refused for the 
 `network address update` reads the address only to retain `rdns_name`, the one field in
 go-anxcloud's `address.Update` without `omitempty`. `description_customer` and `role` are sparse,
 so `--description ""` and `--role ""` are refused with the same "cannot be emptied" wording as
-prefix; `--rdns ""` reaches the Engine and clears the reverse DNS name.
+prefix; `--rdns ""` reaches the Engine and clears the reverse DNS name. The legacy update also
+carries `name`, but an address's name is the IP itself, so it is not offered, as with prefix.
 
 A field the Engine cannot change safely does not get a flag. `dns zone update` has no `--name`,
 because the Engine's zone update carries the name only in the request body with no old name

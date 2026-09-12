@@ -192,6 +192,54 @@ func newNetworkAddressListCommand(opts *globalOptions) *cobra.Command {
 	return cmd
 }
 
+func newNetworkAddressGetCommand(opts *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <id>",
+		Short: "Show one address",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resource.ValidateIdentifier("address", args[0]); err != nil {
+				return err
+			}
+
+			w, err := opts.Writer(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			c, err := opts.Client(cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := opts.Context(cmd.Context())
+			defer cancel()
+
+			info, err := address.NewAPI(c).Get(ctx, pathValue(args[0]))
+			if err != nil {
+				return opts.Fail(fmt.Errorf("reading address %q: %w", args[0], err))
+			}
+
+			if w.Format().Structured() {
+				return w.Object(info)
+			}
+
+			// Four columns, per the column budget in docs/cli-design.md.
+			// The VLAN and prefix an address sits in are one "-o json"
+			// away, and are less use at a glance than what it is.
+			return w.Table(
+				[]string{"identifier", "name", "version", "status"},
+				[][]string{{
+					info.ID,
+					info.Name,
+					versionValue(info.Version),
+					info.Status,
+				}},
+			)
+		},
+	}
+}
+
 type addressCreateFlags struct {
 	prefix       string
 	address      string
@@ -282,7 +330,9 @@ func newNetworkAddressCreateCommand(opts *globalOptions) *cobra.Command {
 // newNetworkAddressUpdateCommand reads the address first only to carry
 // rdns_name, the one address.Update field without omitempty, so an unset
 // --rdns does not wipe reverse DNS. Description and role are sparse fields, so
-// emptying them is refused while --rdns "" clears the reverse DNS name.
+// emptying them is refused while --rdns "" clears the reverse DNS name. The
+// update body also carries name, but an address's name is the IP itself, so no
+// flag is offered for it.
 func newNetworkAddressUpdateCommand(opts *globalOptions) *cobra.Command {
 	var description, role, rdns string
 
@@ -313,7 +363,7 @@ func newNetworkAddressUpdateCommand(opts *globalOptions) *cobra.Command {
 				return err
 			}
 
-			c, err := opts.Client(cmd.Flags())
+			c, err := opts.Client(flags)
 			if err != nil {
 				return err
 			}
@@ -505,52 +555,4 @@ func newNetworkAddressReserveCommand(opts *globalOptions) *cobra.Command {
 	f.register(cmd.Flags())
 
 	return cmd
-}
-
-func newNetworkAddressGetCommand(opts *globalOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "get <id>",
-		Short: "Show one address",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := resource.ValidateIdentifier("address", args[0]); err != nil {
-				return err
-			}
-
-			w, err := opts.Writer(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-
-			c, err := opts.Client(cmd.Flags())
-			if err != nil {
-				return err
-			}
-
-			ctx, cancel := opts.Context(cmd.Context())
-			defer cancel()
-
-			info, err := address.NewAPI(c).Get(ctx, pathValue(args[0]))
-			if err != nil {
-				return opts.Fail(fmt.Errorf("reading address %q: %w", args[0], err))
-			}
-
-			if w.Format().Structured() {
-				return w.Object(info)
-			}
-
-			// Four columns, per the column budget in docs/cli-design.md.
-			// The VLAN and prefix an address sits in are one "-o json"
-			// away, and are less use at a glance than what it is.
-			return w.Table(
-				[]string{"identifier", "name", "version", "status"},
-				[][]string{{
-					info.ID,
-					info.Name,
-					versionValue(info.Version),
-					info.Status,
-				}},
-			)
-		},
-	}
 }

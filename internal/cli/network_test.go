@@ -1429,20 +1429,12 @@ func TestNetworkAddressUpdateReportsAFailedWrite(t *testing.T) {
 func TestNetworkAddressUpdateStopsWhenTheReadFails(t *testing.T) {
 	isolate(t)
 
-	var sent []request
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sent = append(sent, request{method: r.Method, path: r.URL.Path})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"code":404}}`))
-	}))
-	t.Cleanup(srv.Close)
+	srv, last := server(t, http.StatusNotFound, `{"error":{"code":404}}`)
 
 	_, _, err := run(t, "network", "address", "update", "a-1", "--description", "lab",
 		"--token", "tok", "--api-base-url", srv.URL)
 	require.Error(t, err)
-	require.Len(t, sent, 1, "the read carries rdns_name, so ignoring its error would wipe reverse DNS")
-	require.Equal(t, http.MethodGet, sent[0].method)
+	require.Equal(t, http.MethodGet, last.method, "a PUT afterwards would overwrite the recorded GET")
 	require.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
 	require.Contains(t, errmap.Message(err), `reading address "a-1"`)
 }
@@ -1496,12 +1488,13 @@ func TestNetworkAddressUpdateOffersTheWritableFields(t *testing.T) {
 // TestNetworkAddressWriteVerbsGuardTheIdentifier pins URL path safety for address writes.
 func TestNetworkAddressWriteVerbsGuardTheIdentifier(t *testing.T) {
 	verbs := []struct {
-		name   string
-		args   func(string) []string
-		method string
+		name     string
+		args     func(string) []string
+		method   string
+		requests int
 	}{
-		{name: "update", args: func(id string) []string { return []string{"network", "address", "update", id, "--description", "lab"} }, method: http.MethodPut},
-		{name: "delete", args: func(id string) []string { return []string{"network", "address", "delete", id, "--yes"} }, method: http.MethodDelete},
+		{name: "update", args: func(id string) []string { return []string{"network", "address", "update", id, "--description", "lab"} }, method: http.MethodPut, requests: 2},
+		{name: "delete", args: func(id string) []string { return []string{"network", "address", "delete", id, "--yes"} }, method: http.MethodDelete, requests: 1},
 	}
 	badIDs := map[string]string{
 		"a slash": "a/1", "nothing": "", "whitespace": "  ", "a dot": ".", "two dots": "..", "padded dots": " .. ",
@@ -1526,20 +1519,12 @@ func TestNetworkAddressWriteVerbsGuardTheIdentifier(t *testing.T) {
 		t.Run(verb.name+" escapes the identifier", func(t *testing.T) {
 			isolate(t)
 			var sent []request
-			responses := []string{oneAddress}
-			if verb.name == "update" {
-				responses = append(responses, oneAddress)
-			}
-			srv := recordingServer(t, &sent, responses...)
+			srv := recordingServer(t, &sent, oneAddress)
 
 			args := append(verb.args("a 1?x=y"), "--token", "tok", "--api-base-url", srv)
 			_, _, err := run(t, args...)
 			require.NoError(t, err)
-			if verb.name == "update" {
-				require.Len(t, sent, 2)
-			} else {
-				require.Len(t, sent, 1)
-			}
+			require.Len(t, sent, verb.requests)
 			require.Equal(t, verb.method, sent[len(sent)-1].method)
 			for _, request := range sent {
 				require.Equal(t, "/api/ipam/v1/address.json/a 1?x=y", request.path)
@@ -1606,7 +1591,9 @@ func TestNetworkAddressDeleteReportsTheFailure(t *testing.T) {
 	require.Contains(t, errmap.Message(err), `deleting address "a-1"`)
 }
 
-// TestNetworkAddressReserveSendsThePayloadAndRendersTheData pins an explicit reservation body and list rendering. ReserveRandom sleeps up to one second before each request, so reserve tests are slow by design.
+// TestNetworkAddressReserveSendsThePayloadAndRendersTheData pins an explicit
+// reservation body and list rendering. ReserveRandom sleeps up to one second
+// before each request, so reserve tests are slow by design.
 func TestNetworkAddressReserveSendsThePayloadAndRendersTheData(t *testing.T) {
 	isolate(t)
 
@@ -1654,6 +1641,36 @@ func TestNetworkAddressReserveSendsOnlyTheRequiredFieldsByDefault(t *testing.T) 
 		"vlan_identifier":     "v-1",
 		"count":               float64(1),
 	}, body)
+}
+
+// TestNetworkAddressReserveTruncatesAcceptedPeriods pins the one-second
+// boundary and the whole-seconds payload conversion.
+func TestNetworkAddressReserveTruncatesAcceptedPeriods(t *testing.T) {
+	tests := []struct {
+		period string
+		want   float64
+	}{
+		{period: "1s", want: 1},
+		{period: "1500ms", want: 1},
+		{period: "1h", want: 3600},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.period, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, `{"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+			_, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+				"--reservation-period", tt.period, "--token", "tok", "--api-base-url", srv)
+			require.NoError(t, err)
+			require.Len(t, sent, 1)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+			require.Equal(t, tt.want, body["reservation_period"])
+		})
+	}
 }
 
 // TestNetworkAddressReserveKeepsTheSummaryInJSON pins structured output of the full reservation summary.
