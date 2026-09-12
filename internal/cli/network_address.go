@@ -34,6 +34,8 @@ func newNetworkAddressCommand(opts *globalOptions) *cobra.Command {
 	)
 }
 
+// addressColumns is the projection list create and update share: the Engine
+// answers both writes with the list summary rather than the full object.
 var addressColumns = []string{"identifier", "name", "role", "description"}
 
 func addressRow(s *address.Summary) []string {
@@ -440,7 +442,7 @@ func (f *addressReserveFlags) payload(flags *pflag.FlagSet) (address.ReserveRand
 	}
 
 	seconds := f.reservationPeriod / time.Second
-	// #nosec G115 -- seconds is at least 1 and bounded by time.Duration's range.
+	// #nosec G115 -- the value is 0 when unset and otherwise at least 1, so it is never negative.
 	period := uint(seconds)
 
 	return address.ReserveRandom{

@@ -82,7 +82,7 @@ anexia network address list --prefix <prefix-id> --version 4
 anexia network address create --prefix <prefix-id> --address 192.0.2.10 --description "web" --role Default --rdns web.example.com
 anexia network address update <address-id> --description "web (retired)" --role Default --rdns old-web.example.com
 anexia network address delete <address-id> --yes
-anexia network address reserve --location <location-id> --vlan <vlan-id> --count 2 --prefix <prefix-id> --reservation-period 30m
+anexia network address reserve --location <location-id> --vlan <vlan-id> --count 2 --prefix <prefix-id> --reservation-period 1h
 ```
 
 Boolean payload flags such as `--vm-provisioning` are switched off on `update` with an explicit

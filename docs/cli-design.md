@@ -153,6 +153,9 @@ is not past anything, so it stays a plain not-found and exits 4.
 Flag names are lowercase and use dashes, never underscores. Every flag has a usage string. A
 command never registers a local flag whose name collides with a global one.
 
+`network address create` calls the Engine's `name` field `--address`, because the value is an IP
+address and `--name` would read as a label. `list` and `get` still show it in the NAME column.
+
 Filter flags on `list` are named after the field they filter, in the singular: `--tag`, `--name`,
 `--location`, `--status`, `--service`. Not after the Engine's query parameter, which is why
 `core tag list` takes `--name` even though the Engine calls it `query`. Repeatable filters would
@@ -171,8 +174,9 @@ that accepts sorting.
 
 Write verbs on resources that report a provisioning state will get `--wait` and `--wait-timeout`.
 Resources without a state must not get the flags at all, so `--wait` is never accepted only to
-fail later. `network vlan` (`Pending`, `Active`, `Marked for deletion`) and `network prefix` (`status`)
-are the implemented resources that report one; their `--wait` is still to come.
+fail later. `network vlan` (`Pending`, `Active`, `Marked for deletion`), `network prefix` (`status`)
+and `network address` (`status`) are the implemented resources that report one; their `--wait` is
+still to come.
 
 An `update` that names no field is refused before the write. The Engine would accept it, and on a
 resource that versions its contents that means a revision nobody asked for, reported as success.
