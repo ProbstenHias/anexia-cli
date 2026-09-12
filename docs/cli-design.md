@@ -64,8 +64,8 @@ A resource that is only reachable inside another, such as a DNS record inside it
 `Scope` hook. Scope flags are required, and unlike list filters they apply to every verb, because
 without one there is no collection to address at all.
 
-Some resources the CLI already reaches are writable in the Engine and do not offer the verbs yet,
-`network address` among them. `network prefix` shows how they get declared: hand-written against
+Some resources the CLI will reach are writable in the Engine before the CLI offers the verbs.
+`network prefix` and `network address` show how they get declared: hand-written against
 the legacy client, but with the same verbs, flags-as-payload, confirmation and error shape as the
 registry, so a user cannot tell which half of the CLI served the command.
 
@@ -84,7 +84,8 @@ create a tag object, and `anexia core resource tag add` does not.
 
 Four operations have no honest CRUD spelling and are allowed as leaf
 verbs: `network address reserve`, `dns zone import`, `dns zone apply`, and
-`storage bucket empty-and-delete`. The two DNS ones ship; the others are planned.
+`storage bucket empty-and-delete`. The DNS operations and `network address reserve` ship;
+`storage bucket empty-and-delete` is planned.
 `import` and `apply` take a document via `--file` rather than payload flags,
 because the Engine accepts a BIND zone file and a JSON changeset respectively,
 and spelling either out as repeated flags would mean inventing a small language

@@ -79,6 +79,10 @@ anexia network vlan list --location <location-id> --status Active
 anexia network vlan create --location <location-id> --description "lab" --vm-provisioning
 anexia network vlan update <vlan-id> --description "lab (retired)" --vm-provisioning=false
 anexia network address list --prefix <prefix-id> --version 4
+anexia network address create --prefix <prefix-id> --address 192.0.2.10 --description "web" --role Default --rdns web.example.com
+anexia network address update <address-id> --description "web (retired)" --role Default --rdns old-web.example.com
+anexia network address delete <address-id> --yes
+anexia network address reserve --location <location-id> --vlan <vlan-id> --count 2 --prefix <prefix-id> --reservation-period 30m
 ```
 
 Boolean payload flags such as `--vm-provisioning` are switched off on `update` with an explicit
@@ -209,8 +213,8 @@ implemented one. The distinction matters to whoever picks the work up, so the ta
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
 The `core`, `network`, `dns` and `kubernetes` groups below are implemented. Within `network`, `vlan` has every
-verb because go-anxcloud models it generically; `prefix` has every verb hand-written against the
-older client, and `address` is read only for now because its write verbs are still to be declared.
+verb because go-anxcloud models it generically; `prefix` and `address` have every verb hand-written against the
+older client.
 The remaining groups, starting with `vsphere`, are roadmap items read off go-anxcloud v0.14.5 and
 not verified against the Engine.
 
@@ -229,7 +233,7 @@ not verified against the Engine.
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `network vlan` | [x] | [x] | [x] | [x] | [x] | `--status` and `--location` filters [x]; a VLAN's location is fixed at creation, so `update` has no `--location` |
 | `network prefix` | [x] | [x] | [x] | [x] | [x] | `--search` [x]; a prefix's name is its Engine-assigned CIDR, so `update` offers `--description` only |
-| `network address` | [x] | [x] | [ ] | [ ] | [ ] | `--search` [x]; field filters [x]; `reserve` [ ] |
+| `network address` | [x] | [x] | [x] | [x] | [x] | `--search` [x]; field filters [x]; `reserve` [x] |
 
 ### vsphere
 
@@ -326,8 +330,8 @@ handle updates differently from the other four, so their write verbs may not all
 
 The write verbs landed with the `dns` group, the first resources the Engine lets the CLI write
 through the registry, and `network vlan` followed the same way. Most other resources reachable today
-are read-only in the Engine anyway. `core tag` and `network prefix` drive the legacy client directly;
-addresses are writable in the library and their write verbs are still to be declared.
+are read-only in the Engine anyway. `core tag`, `network prefix` and `network address` drive the legacy
+client directly.
 
 ## Development
 

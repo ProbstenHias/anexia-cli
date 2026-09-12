@@ -51,16 +51,13 @@ func TestNetworkWithoutSubcommandPrintsHelp(t *testing.T) {
 	require.Contains(t, stdout, "address")
 }
 
-func TestNetworkAddressOnlyHasReadVerbs(t *testing.T) {
+func TestNetworkAddressHasEveryVerb(t *testing.T) {
 	isolate(t)
 
 	stdout, _, err := run(t, "network", "address")
 	require.NoError(t, err)
-	require.Contains(t, stdout, "list")
-	require.Contains(t, stdout, "get")
-	for _, absent := range []string{"create", "update", "delete", "destroy", "reserve"} {
-		require.NotContains(t, stdout, absent,
-			"address write verbs are still to be declared")
+	for _, verb := range []string{"list", "get", "create", "update", "delete", "reserve"} {
+		require.Contains(t, stdout, verb)
 	}
 }
 
@@ -1230,6 +1227,192 @@ func TestNetworkAddressesPluralAlias(t *testing.T) {
 	stdout, _, err := run(t, "network", "addresses", "list", "--token", "tok", "--api-base-url", srv.URL)
 	require.NoError(t, err)
 	require.Contains(t, stdout, "10.0.0.1")
+}
+
+const oneAddress = `{"identifier":"a-1","name":"10.0.0.1","role_text":"Default","description_customer":"gateway","rdns_name":"old.example.com"}`
+
+func TestNetworkAddressCreateSendsTheLegacyCreateBody(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, oneAddress)
+
+	stdout, _, err := run(t, "network", "address", "create",
+		"--prefix", "p-1", "--address", "10.0.0.1", "--description", "gateway",
+		"--organization", "o-1", "--rdns", "host.example.com",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodPost, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address.json", sent[0].path)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{
+		"prefix":               "p-1",
+		"name":                 "10.0.0.1",
+		"description_customer": "gateway",
+		"role":                 "Default",
+		"organization":         "o-1",
+		"rdns_name":            "host.example.com",
+	}, body)
+	require.Contains(t, stdout, "10.0.0.1")
+}
+
+func TestNetworkAddressCreateRejectsBadFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing prefix", args: []string{"--address", "10.0.0.1"}, want: "--prefix is required"},
+		{name: "missing address", args: []string{"--prefix", "p-1"}, want: "--address is required"},
+		{name: "invalid prefix", args: []string{"--prefix", "p/1", "--address", "10.0.0.1"}, want: `prefix "p/1" does not name a prefix`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress)
+
+			args := append([]string{"network", "address", "create"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
+}
+
+func TestNetworkAddressUpdateKeepsRDNSAndRendersTheWrite(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	updated := strings.Replace(oneAddress, `"gateway"`, `"lab"`, 1)
+	srv := recordingServer(t, &sent, oneAddress, updated)
+
+	stdout, _, err := run(t, "network", "address", "update", "a-1", "--description", "lab", "-o", "json",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 2)
+	require.Equal(t, http.MethodGet, sent[0].method)
+	require.Equal(t, http.MethodPut, sent[1].method)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[1].body), &body))
+	require.Equal(t, map[string]any{
+		"description_customer": "lab",
+		"rdns_name":            "old.example.com",
+	}, body)
+
+	var shown map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &shown))
+	require.Equal(t, "lab", shown["description_customer"])
+}
+
+func TestNetworkAddressUpdateRejectsInvalidChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "nothing changed", want: "nothing to update"},
+		{name: "empty description", args: []string{"--description", ""}, want: "--description cannot be emptied"},
+		{name: "empty role", args: []string{"--role", ""}, want: "--role cannot be emptied"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, oneAddress)
+
+			args := append([]string{"network", "address", "update", "a-1"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
+}
+
+func TestNetworkAddressDeleteConfirms(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{}`)
+
+	stdout, stderr, err := runWithInput(t, "y\n", "network", "address", "delete", "a-1",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Empty(t, stdout)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodDelete, sent[0].method)
+	require.Contains(t, stderr, `delete address "a-1"`)
+	require.Contains(t, stderr, "deleted address a-1")
+}
+
+func TestNetworkAddressReserveSendsThePayloadAndRendersTheData(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, `{"limit":1,"page":1,"total_items":1,"total_pages":1,"data":[{"identifier":"a-9","text":"10.0.0.9","prefix":"10.0.0.0/24"}]}`)
+
+	stdout, _, err := run(t, "network", "address", "reserve", "--location", "l-1", "--vlan", "v-1",
+		"--count", "2", "--prefix", "p-1", "--version", "6", "--reservation-period", "30m",
+		"--token", "tok", "--api-base-url", srv)
+	require.NoError(t, err)
+	require.Len(t, sent, 1)
+	require.Equal(t, http.MethodPost, sent[0].method)
+	require.Equal(t, "/api/ipam/v1/address/reserve/ip/count.json", sent[0].path)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
+	require.Equal(t, map[string]any{
+		"location_identifier": "l-1",
+		"vlan_identifier":     "v-1",
+		"count":               float64(2),
+		"prefix_identifier":   "p-1",
+		"ip_version":          float64(6),
+		"reservation_period":  float64(1800),
+	}, body)
+	require.Contains(t, stdout, "a-9")
+	require.Contains(t, stdout, "10.0.0.9")
+}
+
+func TestNetworkAddressReserveRejectsBadFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing location", args: []string{"--vlan", "v-1"}, want: "--location is required"},
+		{name: "missing vlan", args: []string{"--location", "l-1"}, want: "--vlan is required"},
+		{name: "zero count", args: []string{"--location", "l-1", "--vlan", "v-1", "--count", "0"}, want: "--count must be at least 1"},
+		{name: "invalid version", args: []string{"--location", "l-1", "--vlan", "v-1", "--version", "5"}, want: "--version 5 must be 4 or 6"},
+		{name: "zero reservation period", args: []string{"--location", "l-1", "--vlan", "v-1", "--reservation-period", "0s"}, want: "--reservation-period must be positive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			var sent []request
+			srv := recordingServer(t, &sent, `{}`)
+
+			args := append([]string{"network", "address", "reserve"}, tt.args...)
+			args = append(args, "--token", "tok", "--api-base-url", srv)
+			_, _, err := run(t, args...)
+			require.Error(t, err)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Contains(t, errmap.Message(err), tt.want)
+			require.Empty(t, sent)
+		})
+	}
 }
 
 // TestNetworkListAllCarriesFiltersAcrossPages pins that the parameters that
