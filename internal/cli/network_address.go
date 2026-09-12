@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"time"
 
@@ -277,6 +277,10 @@ func newNetworkAddressCreateCommand(opts *globalOptions) *cobra.Command {
 	return cmd
 }
 
+// newNetworkAddressUpdateCommand reads the address first only to carry
+// rdns_name, the one address.Update field without omitempty, so an unset
+// --rdns does not wipe reverse DNS. Description and role are sparse fields, so
+// emptying them is refused while --rdns "" clears the reverse DNS name.
 func newNetworkAddressUpdateCommand(opts *globalOptions) *cobra.Command {
 	var description, role, rdns string
 
@@ -343,7 +347,7 @@ func newNetworkAddressUpdateCommand(opts *globalOptions) *cobra.Command {
 
 	cmd.Flags().StringVar(&description, "description", "", "customer description")
 	cmd.Flags().StringVar(&role, "role", "", "address role")
-	cmd.Flags().StringVar(&rdns, "rdns", "", "reverse DNS name")
+	cmd.Flags().StringVar(&rdns, "rdns", "", "reverse DNS name, empty clears it")
 
 	return cmd
 }
@@ -397,7 +401,7 @@ func (f *addressReserveFlags) register(flags *pflag.FlagSet) {
 	flags.IntVar(&f.count, "count", 1, "number of addresses to reserve")
 	flags.StringVar(&f.prefix, "prefix", "", "prefix identifier to reserve addresses from")
 	flags.IntVar(&f.version, "version", 0, "IP version to reserve, 4 or 6")
-	flags.DurationVar(&f.reservationPeriod, "reservation-period", 0, "how long to reserve addresses")
+	flags.DurationVar(&f.reservationPeriod, "reservation-period", 0, "how long to reserve the addresses (the Engine defaults to 30m)")
 }
 
 func (f *addressReserveFlags) payload(flags *pflag.FlagSet) (address.ReserveRandom, error) {
@@ -431,15 +435,12 @@ func (f *addressReserveFlags) payload(flags *pflag.FlagSet) (address.ReserveRand
 		}
 	}
 
-	seconds := f.reservationPeriod / time.Second
-	if flags.Changed("reservation-period") && seconds <= 0 {
-		return address.ReserveRandom{}, errmap.Usagef("--reservation-period must be positive")
-	}
-	if strconv.IntSize == 32 && seconds > math.MaxUint32 {
-		return address.ReserveRandom{}, errmap.Usagef("--reservation-period is too large")
+	if flags.Changed("reservation-period") && f.reservationPeriod < time.Second {
+		return address.ReserveRandom{}, errmap.Usagef("--reservation-period must be at least 1s")
 	}
 
-	// #nosec G115 -- seconds is positive and bounded to MaxUint32 on 32-bit platforms.
+	seconds := f.reservationPeriod / time.Second
+	// #nosec G115 -- seconds is at least 1 and bounded by time.Duration's range.
 	period := uint(seconds)
 
 	return address.ReserveRandom{
@@ -481,6 +482,9 @@ func newNetworkAddressReserveCommand(opts *globalOptions) *cobra.Command {
 			reserved, err := address.NewAPI(c).ReserveRandom(ctx, body)
 			if err != nil {
 				return opts.Fail(fmt.Errorf("reserving addresses: %w", err))
+			}
+			if len(reserved.Data) == 0 {
+				return opts.Fail(errors.New("reserving addresses: the Engine returned no addresses"))
 			}
 
 			if w.Format().Structured() {
