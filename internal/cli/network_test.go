@@ -1249,6 +1249,7 @@ func TestNetworkAddressCreateSendsTheLegacyCreateBody(t *testing.T) {
 	require.Len(t, sent, 1)
 	require.Equal(t, http.MethodPost, sent[0].method)
 	require.Equal(t, "/api/ipam/v1/address.json", sent[0].path)
+	require.Empty(t, sent[0].query)
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))
@@ -1364,9 +1365,9 @@ func TestNetworkAddressUpdateKeepsRDNSAndRendersTheWrite(t *testing.T) {
 		"rdns_name":            "old.example.com",
 	}, body)
 
-	var shown map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &shown))
-	require.Equal(t, "lab", shown["description_customer"])
+	// The PUT answer is rendered whole: every summary field, including the
+	// ones the table drops (rdns_name, role_text), must survive into -o json.
+	require.JSONEq(t, updated, stdout)
 }
 
 // TestNetworkAddressUpdateHandlesRDNSAndRoleChanges pins sparse updates and explicit rDNS overrides.
@@ -1526,9 +1527,9 @@ func TestNetworkAddressWriteVerbsGuardTheIdentifier(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, sent, verb.requests)
 			require.Equal(t, verb.method, sent[len(sent)-1].method)
-			for _, request := range sent {
-				require.Equal(t, "/api/ipam/v1/address.json/a 1?x=y", request.path)
-				require.Empty(t, request.query)
+			for _, req := range sent {
+				require.Equal(t, "/api/ipam/v1/address.json/a 1?x=y", req.path)
+				require.Empty(t, req.query)
 			}
 		})
 	}
@@ -1607,6 +1608,7 @@ func TestNetworkAddressReserveSendsThePayloadAndRendersTheData(t *testing.T) {
 	require.Len(t, sent, 1)
 	require.Equal(t, http.MethodPost, sent[0].method)
 	require.Equal(t, "/api/ipam/v1/address/reserve/ip/count.json", sent[0].path)
+	require.Empty(t, sent[0].query)
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal([]byte(sent[0].body), &body))

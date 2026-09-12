@@ -234,7 +234,7 @@ Four formats, one flag.
 Column sets are short on purpose, up to five fields, because a table wider than a terminal is
 useless. Fewer when the Engine returns less: prefix and address writes are answered with their list
 summaries, so `network prefix create`, `network address create` and their `update` verbs show the
-summary fields only, and the full object is a `get <id> -o json` away. Everywhere else the full
+list columns only, and the full object is a `get <id> -o json` away. Everywhere else the full
 object is one `-o json` away.
 
 `tsv` is `table` without the alignment: raw values, lowercase headers, tab-separated. This is the

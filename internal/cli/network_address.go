@@ -34,7 +34,7 @@ func newNetworkAddressCommand(opts *globalOptions) *cobra.Command {
 	)
 }
 
-// addressColumns is the projection list create and update share: the Engine
+// addressColumns is the projection list, create and update share: the Engine
 // answers both writes with the list summary rather than the full object.
 var addressColumns = []string{"identifier", "name", "role", "description"}
 
@@ -42,6 +42,7 @@ func addressRow(s *address.Summary) []string {
 	return []string{s.ID, s.Name, s.Role, s.DescriptionCustomer}
 }
 
+// renderAddressSummary prints a write's summary answer as a table or object.
 func renderAddressSummary(w *output.Writer, s *address.Summary) error {
 	if w.Format().Structured() {
 		return w.Object(s)
@@ -240,6 +241,7 @@ func newNetworkAddressGetCommand(opts *globalOptions) *cobra.Command {
 	}
 }
 
+// addressCreateFlags holds the create payload before it becomes an address.Create.
 type addressCreateFlags struct {
 	prefix       string
 	address      string
