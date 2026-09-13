@@ -67,6 +67,17 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 			}
 		}
 
+		// Same reasoning for a page the endpoint can never serve: it is a
+		// usage mistake and has to be reported as one, not as a missing token.
+		paginated, err := paginates(cmd.Context(), PO(&filter))
+		if err != nil {
+			return err
+		}
+
+		if !paginated && page > 1 {
+			return unservablePageError(spec.plural(), page)
+		}
+
 		a, err := env.API(cmd.Flags())
 		if err != nil {
 			return err
@@ -131,7 +142,7 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, notices io.Writ
 		// returns the same full result set: asking again is pointless, and
 		// asking for a later page cannot be answered at all.
 		if page > 1 {
-			return nil, errmap.Usagef("%s does not support paging, so --page %d cannot be served", plural, page)
+			return nil, unservablePageError(plural, page)
 		}
 
 		all = false
@@ -204,6 +215,12 @@ func noteIncompleteWalk(notices io.Writer, plural string, page int) {
 // succeeds on the other is the divergence users notice.
 func endOfWalk(err error, page, current int, all bool) bool {
 	return all && current > page && errmap.IsNotFound(err)
+}
+
+// unservablePageError reports a page request an endpoint that never pages
+// cannot answer.
+func unservablePageError(plural string, page int) error {
+	return errmap.Usagef("%s does not support paging, so --page %d cannot be served", plural, page)
 }
 
 // paginates reports whether the object's endpoint pages at all. go-anxcloud
