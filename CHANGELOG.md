@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.5.0...v0.6.0) (2026-09-12)
+
+
+### Features
+
+* **kubernetes:** add cluster, node-pool and kubeconfig commands ([#16](https://github.com/ProbstenHias/anexia-cli/issues/16)) ([cf3599f](https://github.com/ProbstenHias/anexia-cli/commit/cf3599fabc87281e49c2e8857702a6ed118962f6))
+* **network:** add address create, update, delete and reserve verbs ([#18](https://github.com/ProbstenHias/anexia-cli/issues/18)) ([f485636](https://github.com/ProbstenHias/anexia-cli/commit/f485636c2880b752d6f7e568f5c5d53210ff5a95))
+
 ## [0.5.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.4.0...v0.5.0) (2026-09-05)
 
 
