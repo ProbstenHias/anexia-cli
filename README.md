@@ -205,8 +205,8 @@ Filter client-side for now:
 anexia core location list -o tsv --no-headers | grep ANX04
 ```
 
-The vSphere-specific location list, with its human-readable country name and server-side filters,
-returns with the `vsphere` group.
+The vSphere-specific location list is `anexia vsphere location list`. It has a human-readable
+country name and server-side `--code` and `--organization` filters.
 
 ## Feature coverage
 
@@ -215,11 +215,11 @@ cannot reach it: either the library says the Engine has no such operation, or it
 implemented one. The distinction matters to whoever picks the work up, so the tables say which
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
-The `core`, `network`, `dns` and `kubernetes` groups below are implemented. Within `network`, `vlan` has every
-verb because go-anxcloud models it generically; `prefix` and `address` have every verb hand-written against the
-older client.
-The remaining groups, starting with `vsphere`, are roadmap items read off go-anxcloud v0.14.5 and
-not verified against the Engine.
+The `core`, `network`, `dns` and `kubernetes` groups below are implemented. `vsphere` is partially
+implemented with location, template and disk-type reads. Within `network`, `vlan` has every verb because
+go-anxcloud models it generically; `prefix` and `address` have every verb hand-written against the older client.
+The remaining groups, starting with `lbaas`, are roadmap items read off go-anxcloud v0.14.5 and not verified
+against the Engine.
 
 ### core
 
@@ -243,7 +243,7 @@ not verified against the Engine.
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `vsphere vm` | [ ] | [ ] | [ ] | [ ] | [ ] | `power get`/`set` [ ] |
-| `vsphere template` | [x] | [ ] | - | - | - | |
+| `vsphere template` | [x] | [x] | - | - | - | |
 | `vsphere location` | [x] | - | - | - | - | |
 | `vsphere disk-type` | [x] | - | - | - | - | |
 | `vsphere nic-type` | [ ] | - | - | - | - | |
