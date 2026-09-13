@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.6.0...v0.7.0) (2026-09-13)
+
+
+### Features
+
+* **vsphere:** add location, template and disk-type commands ([#19](https://github.com/ProbstenHias/anexia-cli/issues/19)) ([ea281ef](https://github.com/ProbstenHias/anexia-cli/commit/ea281effe810e59c8b53c4470ad3e28eb9e3dc5c))
+
 ## [0.6.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.5.0...v0.6.0) (2026-09-12)
 
 
