@@ -28,7 +28,7 @@ Group, noun, verb, in that order, always. The noun is singular so the sentence r
 `resource.Noun` rather than `resource.Group` to build a noun and the alias comes with it.
 
 Groups mirror the Anexia Engine's own API areas rather than inventing a taxonomy: `core`,
-`network`, `dns` and `kubernetes`; roadmap groups include `vsphere`, `lbaas`, `e5e`, `frontier`,
+`network`, `dns`, `kubernetes` and `vsphere`; roadmap groups include `lbaas`, `e5e`, `frontier`,
 and `storage`.
 The singular rule does not apply to them, because Anexia named them, not us. Two commands sit
 outside this scheme because they never talk to the Engine: `anexia config` and `anexia version`.
@@ -375,8 +375,8 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 `listing <plural>: %w` error prefix, identical to every other resource.
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
-hand against the legacy client (`core tag`, `core service`, `network prefix`, `network address` and
-the two `dns zone` document verbs are the current examples). They
+hand against the legacy client (`core tag`, `core service`, `network prefix`, `network address`,
+the vSphere provisioning lists and the two `dns zone` document verbs are the current examples). They
 follow the same rules by sharing the same pieces rather than by copying them: `resource.Noun` for
 the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging, `FetchPages` for `--all`,
 `RenderList` for output. Reach for those before writing a variant. When the generic client gains

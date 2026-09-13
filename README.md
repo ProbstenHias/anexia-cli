@@ -83,6 +83,9 @@ anexia network address create --prefix <prefix-id> --address 192.0.2.10 --descri
 anexia network address update <address-id> --description "web (retired)" --role Default --rdns old-web.example.com
 anexia network address delete <address-id> --yes
 anexia network address reserve --location <location-id> --vlan <vlan-id> --count 2 --prefix <prefix-id> --reservation-period 1h
+anexia vsphere location list --code ANX04
+anexia vsphere template list --location <location-id> --type templates
+anexia vsphere disk-type list --location <location-id>
 ```
 
 Boolean payload flags such as `--vm-provisioning` are switched off on `update` with an explicit
@@ -240,9 +243,9 @@ not verified against the Engine.
 | Resource | list | get | create | update | delete | extra |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
 | `vsphere vm` | [ ] | [ ] | [ ] | [ ] | [ ] | `power get`/`set` [ ] |
-| `vsphere template` | [ ] | [ ] | - | - | - | |
-| `vsphere location` | [ ] | - | - | - | - | |
-| `vsphere disk-type` | [ ] | - | - | - | - | |
+| `vsphere template` | [x] | [ ] | - | - | - | |
+| `vsphere location` | [x] | - | - | - | - | |
+| `vsphere disk-type` | [x] | - | - | - | - | |
 | `vsphere nic-type` | [ ] | - | - | - | - | |
 | `vsphere cpu-performance-type` | [ ] | - | - | - | - | |
 | `vsphere availability-zone` | [ ] | - | - | - | - | |
