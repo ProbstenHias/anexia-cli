@@ -108,6 +108,10 @@ var engineActions = map[string]string{
 	"anexia core tag create":                      `creating tag "placeholder"`,
 	"anexia core tag delete":                      `deleting tag "placeholder"`,
 	"anexia core service list":                    "listing services",
+	"anexia vsphere location list":                "listing locations",
+	"anexia vsphere template list":                "listing templates",
+	"anexia vsphere template get":                 `reading template "placeholder"`,
+	"anexia vsphere disk-type list":               "listing disk types",
 	"anexia network vlan list":                    "listing vlans",
 	"anexia network vlan get":                     `reading vlan "placeholder"`,
 	"anexia network vlan create":                  `creating vlan "placeholder"`,
@@ -442,11 +446,13 @@ var invocationFlags = map[string]string{
 	"disk":        "20",
 }
 
-// commandInvocationFlags override invocationFlags for one command where a
-// flag name is shared with a different vocabulary: "type" is a record type on
-// a DNS record and public or private on a prefix.
+// commandInvocationFlags override invocationFlags where a flag name is shared
+// with a different vocabulary: "type" is a record type on a DNS record,
+// public or private on a prefix, and a template source on vSphere templates.
 var commandInvocationFlags = map[string]map[string]string{
 	"anexia network prefix create": {"type": "private"},
+	"anexia vsphere template list": {"type": "templates"},
+	"anexia vsphere template get":  {"type": "templates"},
 }
 
 // documentFile writes a file for the commands that read one, so --file names
