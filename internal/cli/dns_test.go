@@ -461,6 +461,30 @@ func TestDNSRecordWriteRefusesAZeroTTL(t *testing.T) {
 	}
 }
 
+// TestDNSRecordCreateAcceptsQuotedTXTData covers issue #21. TXT data passed in
+// the quoted form the Engine lists it in was sent as is, go-anxcloud quoted it
+// again to find the record in the response, and a create that worked exited
+// with "record not found".
+func TestDNSRecordCreateAcceptsQuotedTXTData(t *testing.T) {
+	isolate(t)
+
+	const created = `{"name":"example.com","current_revision":"rev-1","revisions":[
+	  {"identifier":"rev-1","records":[{"identifier":"rec-t","name":"_acme","type":"TXT","rdata":"\"token\"","ttl":3600}]}
+	]}`
+
+	srv, last := server(t, http.StatusOK, created)
+
+	stdout, _, err := run(t, "dns", "record", "create", "--zone", "example.com",
+		"--name", "_acme", "--type", "TXT", "--rdata", `"token"`,
+		"--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Contains(t, stdout, "rec-t")
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(last.body), &sent))
+	require.Equal(t, "token", sent["rdata"])
+}
+
 func TestDNSRecordCreateRequiresItsPayload(t *testing.T) {
 	isolate(t)
 	srv, _ := server(t, http.StatusOK, createdRecordZone)

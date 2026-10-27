@@ -158,7 +158,7 @@ func recordCreateFlags(flags *pflag.FlagSet) func(*clouddnsv1.Record) error {
 
 		r.Name = *fields.name
 		r.Type = *fields.recordType
-		r.RData = *fields.rdata
+		r.RData = unquoteTXT(*fields.recordType, *fields.rdata)
 		r.Region = *fields.region
 		r.TTL = *fields.ttl
 
@@ -294,8 +294,12 @@ func checkTTL(ttl int) error {
 	return nil
 }
 
-// unquoteTXT strips the quoting the Engine puts around TXT record data, for
-// the one caller that has to hand a listed record back to an update.
+// unquoteTXT strips the quoting the Engine puts around TXT record data.
+//
+// go-anxcloud quotes TXT data itself when it looks for a written record in
+// the response, so data sent with quotes, whether listed by the Engine or
+// typed by the user in the form the Engine shows it, is matched with doubled
+// quotes and a write that succeeded is reported as a record not found.
 //
 // Only TXT is quoted, and only strconv-style quoting is undone: a value that
 // does not parse is returned unchanged, because a TXT record can hold anything
@@ -335,6 +339,11 @@ func applyRecordChanges(flags *pflag.FlagSet, fields recordFields, r *clouddnsv1
 
 	if changed == 0 {
 		return errmap.Usagef("nothing to update: pass at least one field to change")
+	}
+
+	// Done after the loop so a --type change in the same call is seen.
+	if flags.Changed("rdata") {
+		r.RData = unquoteTXT(r.Type, r.RData)
 	}
 
 	return checkTTL(r.TTL)
