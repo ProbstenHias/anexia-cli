@@ -170,6 +170,12 @@ create and a list to delete:
 				return errmap.Usagef("reading changeset: %v", err)
 			}
 
+			// One document only: content after it is not part of the
+			// changeset, so accepting it would apply less than was written.
+			if err := dec.Decode(&struct{}{}); err != io.EOF {
+				return errmap.Usagef("reading changeset: unexpected content after the changeset")
+			}
+
 			// The delete half removes records, so this confirms even when
 			// the changeset only creates: what it contains is the user's
 			// claim until the Engine has acted on it.

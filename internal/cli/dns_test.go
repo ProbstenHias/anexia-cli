@@ -723,6 +723,22 @@ func TestDNSZoneApplyRejectsAMalformedChangeset(t *testing.T) {
 	require.Empty(t, sent)
 }
 
+func TestDNSZoneApplyRejectsTrailingContent(t *testing.T) {
+	isolate(t)
+
+	var sent []request
+	srv := recordingServer(t, &sent, "[]")
+
+	path := writeFile(t, "changeset.json", `{"create":[],"delete":[]} {"delete":[{"name":"www","type":"A","rdata":"10.0.0.1","region":"","ttl":3600}]}`)
+
+	_, _, err := run(t, "dns", "zone", "apply", "example.com", "--file", path, "--yes",
+		"--token", "tok", "--api-base-url", srv)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+	require.Contains(t, errmap.Message(err), "after the changeset")
+	require.Empty(t, sent)
+}
+
 // TestDNSZoneApplyRejectsAnUnknownKey is why the changeset is decoded strictly.
 // A misspelled "delete" would otherwise be dropped, the Engine would accept the
 // empty changeset it left behind, and the CLI would report success while the
