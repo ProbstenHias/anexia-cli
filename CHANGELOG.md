@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.6.0...v0.7.0) (2026-10-27)
+
+
+### Features
+
+* **vsphere:** add location, template and disk-type commands ([#19](https://github.com/ProbstenHias/anexia-cli/issues/19)) ([ea281ef](https://github.com/ProbstenHias/anexia-cli/commit/ea281effe810e59c8b53c4470ad3e28eb9e3dc5c))
+
+
+### Bug Fixes
+
+* **dns:** accept quoted TXT data on record create and update ([#24](https://github.com/ProbstenHias/anexia-cli/issues/24)) ([c69ebeb](https://github.com/ProbstenHias/anexia-cli/commit/c69ebebe5b15f666640448446da42c438dbd5647))
+* **dns:** reject trailing content after a zone apply changeset ([#25](https://github.com/ProbstenHias/anexia-cli/issues/25)) ([739c7f8](https://github.com/ProbstenHias/anexia-cli/commit/739c7f882f5d0ff5dfa8c90c96ecff72325fea0b))
+
 ## [0.6.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.5.0...v0.6.0) (2026-09-12)
 
 
