@@ -40,6 +40,7 @@ func TestVSphereListShortDescriptions(t *testing.T) {
 		{[]string{"vsphere", "location", "list"}, "List locations"},
 		{[]string{"vsphere", "template", "list"}, "List templates"},
 		{[]string{"vsphere", "disk-type", "list"}, "List disk types"},
+		{[]string{"vsphere", "availability-zone", "list"}, "List availability zones"},
 	} {
 		t.Run(tt.short, func(t *testing.T) {
 			// A user sees the same concise list description across vSphere resources.
@@ -401,6 +402,7 @@ func TestVSphereListNotFound(t *testing.T) {
 		{"location", []string{"vsphere", "location", "list"}, "listing locations:"},
 		{"template", []string{"vsphere", "template", "list", "--location", "l-1"}, "listing templates:"},
 		{"disk type", []string{"vsphere", "disk-type", "list", "--location", "l-1"}, "listing disk types:"},
+		{"availability zone", []string{"vsphere", "availability-zone", "list", "--location", zoneLocationID}, "listing availability zones:"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -427,4 +429,108 @@ func vsphereIdentifiers(t *testing.T, text string) []string {
 		identifiers = append(identifiers, object.Identifier)
 	}
 	return identifiers
+}
+
+const zoneLocationID = "52b5f6b2fd3a4e7aa1c3a0a9d6bf6a05"
+
+func TestVSphereAvailabilityZoneList(t *testing.T) {
+	isolate(t)
+	srv, last := server(t, http.StatusOK, `[`+
+		`{"identifier":"z-1","name":"Zone A","cpu_categories":["standard-amd","performance-amd"],"disk_categories":["ENT1","STD6"]},`+
+		`{"identifier":"z-2","name":"cus1","cpu_categories":["performance-plus-amd"],"disk_categories":[]}]`)
+
+	stdout, _, err := run(t, "vsphere", "availability-zone", "list", "--location", zoneLocationID, "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, "/api/vsphere/v1/provisioning/location.json/"+zoneLocationID+"/availability_zone", last.path)
+	// A user sees which CPU and disk categories each zone offers.
+	require.Equal(t, "IDENTIFIER   NAME     CPU-CATEGORIES                 DISK-CATEGORIES\n"+
+		"z-1          Zone A   standard-amd,performance-amd   ENT1,STD6\n"+
+		"z-2          cus1     performance-plus-amd           \n", stdout)
+}
+
+func TestVSphereAvailabilityZoneListJSONKeepsCategoryLists(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK, `[{"identifier":"z-1","name":"Zone A","cpu_categories":["a","b"],"disk_categories":["c"]}]`)
+
+	stdout, _, err := run(t, "vsphere", "availability-zone", "list", "--location", zoneLocationID, "-o", "json", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	var zones []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &zones))
+	require.Equal(t, []any{"a", "b"}, zones[0]["cpu_categories"])
+}
+
+func TestVSphereAvailabilityZoneListResolvesLocationCode(t *testing.T) {
+	isolate(t)
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path != "/api/vsphere/v1/provisioning/location.json":
+			_, _ = w.Write([]byte(`[{"identifier":"z-1","name":"Zone A"}]`))
+		case r.URL.Query().Get("page") == "1":
+			// A code that only starts with the requested one must not match.
+			_, _ = w.Write([]byte(`{"data":[{"id":"l-other","code":"ANX820"}]}`))
+		case r.URL.Query().Get("page") == "2":
+			_, _ = w.Write([]byte(`{"data":[{"id":"l-82","code":"ANX82"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// A user can name the location by its code, in any case.
+	_, _, err := run(t, "vsphere", "availability-zone", "list", "--location", "anx82", "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, "/api/vsphere/v1/provisioning/location.json/l-82/availability_zone", paths[len(paths)-1])
+}
+
+func TestVSphereAvailabilityZoneListUnknownLocationCode(t *testing.T) {
+	isolate(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"l-other","code":"ANX820"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	// A user naming a code no location carries gets not found, not someone else's zones.
+	_, _, err := run(t, "vsphere", "availability-zone", "list", "--location", "ANX82", "--token", "tok", "--api-base-url", srv.URL)
+	require.Error(t, err)
+	require.Equal(t, errmap.ExitNotFound, errmap.ExitCode(err))
+	require.ErrorContains(t, err, `listing availability zones: `)
+	require.ErrorContains(t, err, `no location with code "ANX82"`)
+}
+
+func TestVSphereAvailabilityZoneListValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"missing location", []string{}, "--location is required"},
+		{"relative location", []string{"--location", ".."}, `location ".." does not name a location`},
+		{"later page", []string{"--location", zoneLocationID, "--page", "2"}, "does not support paging"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			srv, last := server(t, http.StatusOK, `[]`)
+			_, _, err := run(t, append([]string{"vsphere", "availability-zone", "list", "--token", "tok", "--api-base-url", srv.URL}, tt.args...)...)
+			require.ErrorContains(t, err, tt.want)
+			require.Equal(t, errmap.ExitUsage, errmap.ExitCode(err))
+			require.Empty(t, last.path)
+		})
+	}
+}
+
+func TestVSphereAvailabilityZoneListEmpty(t *testing.T) {
+	isolate(t)
+	srv, _ := server(t, http.StatusOK, `[]`)
+
+	_, stderr, err := run(t, "vsphere", "availability-zone", "list", "--location", zoneLocationID, "--token", "tok", "--api-base-url", srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, "no availability zones found\n", stderr)
 }

@@ -75,7 +75,7 @@ func newListCommand[O any, PO Pointer[O]](env Env, spec Spec[O, PO]) *cobra.Comm
 		}
 
 		if !paginated && page > 1 {
-			return unservablePageError(spec.plural(), page)
+			return UnservablePageError(spec.plural(), page)
 		}
 
 		a, err := env.API(cmd.Flags())
@@ -142,7 +142,7 @@ func fetch[O any, PO Pointer[O]](ctx context.Context, a api.API, notices io.Writ
 		// returns the same full result set: asking again is pointless, and
 		// asking for a later page cannot be answered at all.
 		if page > 1 {
-			return nil, unservablePageError(plural, page)
+			return nil, UnservablePageError(plural, page)
 		}
 
 		all = false
@@ -217,9 +217,9 @@ func endOfWalk(err error, page, current int, all bool) bool {
 	return all && current > page && errmap.IsNotFound(err)
 }
 
-// unservablePageError reports a page request an endpoint that never pages
+// UnservablePageError reports a page request an endpoint that never pages
 // cannot answer.
-func unservablePageError(plural string, page int) error {
+func UnservablePageError(plural string, page int) error {
 	return errmap.Usagef("%s does not support paging, so --page %d cannot be served", plural, page)
 }
 

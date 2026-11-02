@@ -86,6 +86,7 @@ anexia network address reserve --location <location-id> --vlan <vlan-id> --count
 anexia vsphere location list --code ANX04
 anexia vsphere template list --location <location-id> --type templates
 anexia vsphere disk-type list --location <location-id>
+anexia vsphere availability-zone list --location ANX82
 ```
 
 Boolean payload flags such as `--vm-provisioning` are switched off on `update` with an explicit
@@ -216,7 +217,7 @@ implemented one. The distinction matters to whoever picks the work up, so the ta
 when the library says which, but a `-` is never evidence about the Engine on its own.
 
 The `core`, `network`, `dns` and `kubernetes` groups below are implemented. `vsphere` is partially
-implemented with location, template and disk-type reads. Within `network`, `vlan` has every verb because
+implemented with location, template, disk-type and availability-zone reads. Within `network`, `vlan` has every verb because
 go-anxcloud models it generically; `prefix` and `address` have every verb hand-written against the older client.
 The remaining groups, starting with `lbaas`, are roadmap items read off go-anxcloud v0.14.5 and not verified
 against the Engine.
@@ -248,7 +249,7 @@ against the Engine.
 | `vsphere disk-type` | [x] | - | - | - | - | |
 | `vsphere nic-type` | [ ] | - | - | - | - | |
 | `vsphere cpu-performance-type` | [ ] | - | - | - | - | |
-| `vsphere availability-zone` | [ ] | - | - | - | - | |
+| `vsphere availability-zone` | [x] | - | - | - | - | `--location` takes an identifier or a code; lists each zone's CPU and disk categories |
 | `vsphere free-ip` | [ ] | - | - | - | - | |
 
 ### dns
