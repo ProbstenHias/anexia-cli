@@ -112,6 +112,7 @@ var engineActions = map[string]string{
 	"anexia vsphere template list":                "listing templates",
 	"anexia vsphere template get":                 `reading template "placeholder"`,
 	"anexia vsphere disk-type list":               "listing disk types",
+	"anexia vsphere availability-zone list":       "listing availability zones",
 	"anexia network vlan list":                    "listing vlans",
 	"anexia network vlan get":                     `reading vlan "placeholder"`,
 	"anexia network vlan create":                  `creating vlan "placeholder"`,

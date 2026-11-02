@@ -376,7 +376,7 @@ formats, `--no-headers`, the plural alias, the empty-result note on stderr and t
 
 Some Engine areas have no generic object in go-anxcloud yet, so their commands are written by
 hand against the legacy client (`core tag`, `core service`, `network prefix`, `network address`,
-the vSphere location and disk-type lists, and the two `dns zone` document verbs are the current examples).
+the vSphere location, disk-type and availability-zone lists, and the two `dns zone` document verbs are the current examples).
 These hand-written commands follow the same rules by sharing the same pieces rather than by copying
 them: `resource.Noun` for the plural alias, `RegisterPagingFlags` and `ValidatePaging` for paging,
 `FetchPages` for `--all`, `RenderList` for output. Reach for those before writing a variant. When the

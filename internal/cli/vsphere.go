@@ -20,6 +20,7 @@ func newVSphereCommand(opts *globalOptions) *cobra.Command {
 		newVSphereLocationCommand(opts),
 		newVSphereTemplateCommand(opts),
 		newVSphereDiskTypeCommand(opts),
+		newVSphereAvailabilityZoneCommand(opts),
 	)
 }
 
