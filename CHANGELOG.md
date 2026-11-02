@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.7.0...v0.8.0) (2026-11-02)
+
+
+### Features
+
+* **vsphere:** add availability-zone list with CPU and disk categories ([#27](https://github.com/ProbstenHias/anexia-cli/issues/27)) ([5a1755d](https://github.com/ProbstenHias/anexia-cli/commit/5a1755dddbdc37e11dd835550620a50ae5529786))
+
 ## [0.7.0](https://github.com/ProbstenHias/anexia-cli/compare/v0.6.0...v0.7.0) (2026-10-27)
 
 
